@@ -43,7 +43,7 @@ If Fireshare is useful to you, [GitHub Sponsors](https://github.com/sponsors/Sha
 - Public / private feeds (private is link-only)
 - [Video transcoding with CPU or GPU](#transcoding-optional)
 - Password protected videos
-- Game-based organization with cover art
+- Game-based organization with cover art, including games you add by hand with your own artwork
 - Folder sharing
 - Mobile device support
 - Uploads (optional, can be restricted)
