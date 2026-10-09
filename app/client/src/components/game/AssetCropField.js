@@ -47,7 +47,11 @@ export const ASSET_SPECS = {
 
 export const ASSET_ORDER = ['hero', 'banner', 'logo', 'icon']
 
-const ACCEPT = 'image/png,image/jpeg,image/webp'
+// .ico is listed by extension as well as type: browsers report it as either
+// image/x-icon or image/vnd.microsoft.icon, and some report no type at all.
+const ACCEPT = 'image/png,image/jpeg,image/webp,image/x-icon,image/vnd.microsoft.icon,.ico'
+const ACCEPTED_TYPES = /^image\/(png|jpeg|webp|x-icon|vnd\.microsoft\.icon)$/
+const isAcceptedFile = (file) => ACCEPTED_TYPES.test(file.type) || /\.ico$/i.test(file.name)
 const MAX_UPLOAD_MB = 20
 const FRAME_HEIGHT = { hero: 230, banner: 230, logo: 230, icon: 220 }
 
@@ -144,8 +148,8 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
   const handleFile = async (file) => {
     if (!file) return
     setError(null)
-    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
-      setError('Use a PNG, JPEG or WebP image.')
+    if (!isAcceptedFile(file)) {
+      setError('Use a PNG, JPEG, WebP or ICO image.')
       return
     }
     if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
@@ -343,7 +347,9 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
         >
           <UploadFileIcon sx={{ color: '#FFFFFF80' }} />
           <Typography sx={{ fontSize: 13, color: 'white', fontWeight: 600 }}>Choose image</Typography>
-          <Typography sx={{ fontSize: 12, color: '#FFFFFF66' }}>PNG, JPEG or WebP, up to {MAX_UPLOAD_MB}MB</Typography>
+          <Typography sx={{ fontSize: 12, color: '#FFFFFF66' }}>
+            PNG, JPEG, WebP or ICO, up to {MAX_UPLOAD_MB}MB
+          </Typography>
         </Box>
       )}
 

@@ -36,6 +36,11 @@ MAX_DECODED_PIXELS = 50_000_000
 NAME_MAX_LENGTH = 256
 WEBP_QUALITY = 92
 
+# Artwork is read by nginx, not just by Flask, so it must be readable by a
+# different user than the one that wrote it.
+ASSET_DIR_MODE = 0o755
+ASSET_FILE_MODE = 0o644
+
 # One entry per slot in game_assets/<id>/. `size` is the stored size of a fixed
 # aspect slot, and for the logo the box it is scaled to fit inside. `aspect` None
 # means the slot keeps whatever shape the (cropped) upload has. The logo and icon
@@ -111,17 +116,28 @@ def search_custom_games(query):
 def _parse_crop(raw, width, height):
     """A crop rectangle from the client as a PIL box, or None when absent.
 
-    The client sends {"x", "y", "width", "height"} in source pixels. It works
-    those out from a scaled preview, so a pixel of drift past an edge is expected
-    and clamped rather than rejected.
+    The client sends {"x", "y", "width", "height"} in the pixels of the image as
+    the browser decoded it, plus that image's "naturalWidth" and "naturalHeight".
+    The browser and Pillow can disagree on the size: an .ico holds several sizes
+    and each picks its own frame. When they do, the rectangle is scaled to the
+    size decoded here. It is worked out from a scaled preview, so a pixel of
+    drift past an edge is expected and clamped rather than rejected.
     """
     if raw in (None, ''):
         return None
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw
-        x, y, w, h = (int(round(float(data[k]))) for k in ('x', 'y', 'width', 'height'))
-    except (TypeError, ValueError, KeyError):
+        x, y, w, h = (float(data[k]) for k in ('x', 'y', 'width', 'height'))
+        natural_w = float(data.get('naturalWidth') or width)
+        natural_h = float(data.get('naturalHeight') or height)
+    except (TypeError, ValueError, KeyError, AttributeError):
         raise AssetError('Invalid crop rectangle.')
+    if natural_w <= 0 or natural_h <= 0:
+        raise AssetError('Invalid crop rectangle.')
+    if (natural_w, natural_h) != (width, height):
+        sx, sy = width / natural_w, height / natural_h
+        x, y, w, h = x * sx, y * sy, w * sx, h * sy
+    x, y, w, h = (int(round(v)) for v in (x, y, w, h))
     x = max(0, min(x, width - 1))
     y = max(0, min(y, height - 1))
     w = max(1, min(w, width - x))
@@ -205,6 +221,7 @@ def process_asset_upload(file_storage, asset_type, crop_raw, dest_dir):
             dest_dir.mkdir(parents=True, exist_ok=True)
             out = dest_dir / f"{spec['slot']}.webp"
             img.save(out, 'WEBP', quality=WEBP_QUALITY, method=6)
+            os.chmod(out, ASSET_FILE_MODE)
             return out
     except AssetError:
         raise
@@ -253,7 +270,14 @@ def _staging_dir():
     move into place is a rename rather than a copy."""
     paths = current_app.config['PATHS']
     paths['data'].mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix='.custom-game-', dir=str(paths['data'])))
+    staging = Path(tempfile.mkdtemp(prefix='.custom-game-', dir=str(paths['data'])))
+    # mkdtemp makes the directory private to this process's user. In the
+    # container that is appuser, but the artwork is served by nginx running as
+    # its own user, which could not even list a 0700 directory. The staging
+    # directory is renamed into place as-is, so give it the permissions a
+    # published directory needs now.
+    os.chmod(staging, ASSET_DIR_MODE)
+    return staging
 
 
 # ---------------------------------------------------------------------------

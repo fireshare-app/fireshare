@@ -71,7 +71,14 @@ const CustomGameModal = ({ open, game, onClose, onSaved }) => {
       const value = assets[type]
       if (!value?.file) return
       form.append(type, value.file, value.file.name)
-      if (value.area) form.append(`${type}_crop`, JSON.stringify(value.area))
+      // The rectangle is in the pixels of the image as this browser decoded it;
+      // the natural size lets the server rescale it if it decodes differently.
+      if (value.area) {
+        form.append(
+          `${type}_crop`,
+          JSON.stringify({ ...value.area, naturalWidth: value.width, naturalHeight: value.height }),
+        )
+      }
     })
 
     setSaving(true)
