@@ -1553,11 +1553,16 @@ def scan_image(ctx, path, game_id, tag_ids, title, uploaded_by):
 
 @cli.command()
 def migrate_game_assets():
-    """Convert any non-webp game assets to webp at 100% quality."""
+    """Convert any non-webp game assets to webp at 100% quality, and make
+    sure every asset directory is readable by nginx."""
+    import stat
     from PIL import Image as PILImage
 
     _ASSET_SLOTS = ['hero_1', 'hero_2', 'logo_1', 'icon_1']
     _NON_WEBP_EXTENSIONS = ['.png', '.jpg', '.jpeg']
+    # Same as api/custom_games.py. nginx serves these as its own user, so a
+    # directory only its owner can enter means every image in it 403s.
+    _WORLD_TRAVERSABLE = stat.S_IROTH | stat.S_IXOTH
 
     with create_app().app_context():
         paths = current_app.config['PATHS']
@@ -1571,9 +1576,19 @@ def migrate_game_assets():
         skipped = 0
         errors = 0
 
+        fixed_modes = 0
         for game_dir in sorted(game_assets_base.iterdir()):
             if not game_dir.is_dir():
                 continue
+            # Custom-game directories made before the fix were created 0700.
+            if (game_dir.stat().st_mode & _WORLD_TRAVERSABLE) != _WORLD_TRAVERSABLE:
+                try:
+                    os.chmod(game_dir, 0o755)
+                    fixed_modes += 1
+                    logger.info(f"migrate-game-assets: made {game_dir.name} readable by the web server")
+                except OSError as e:
+                    logger.error(f"migrate-game-assets: could not chmod {game_dir}: {e}")
+                    errors += 1
             for slot in _ASSET_SLOTS:
                 webp_path = game_dir / f'{slot}.webp'
                 if webp_path.exists():
@@ -1593,7 +1608,10 @@ def migrate_game_assets():
                             errors += 1
                         break
 
-        logger.info(f"migrate-game-assets: complete — {converted} converted, {skipped} already webp, {errors} errors")
+        logger.info(
+            f"migrate-game-assets: complete — {converted} converted, {skipped} already webp, "
+            f"{fixed_modes} directories made readable, {errors} errors"
+        )
 
 
 if __name__=="__main__":
