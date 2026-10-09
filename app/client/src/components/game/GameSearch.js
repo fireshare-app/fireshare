@@ -148,6 +148,14 @@ const GameSearch = ({
         <Box component="li" {...props} key={option.id}>
           {option.name}
           {option.release_date && ` (${new Date(option.release_date * 1000).getFullYear()})`}
+          {option.custom ? (
+            <Box
+              component="span"
+              sx={{ ml: 1, fontSize: 11, color: '#FFFFFF66', textTransform: 'uppercase', letterSpacing: '0.08em' }}
+            >
+              Custom
+            </Box>
+          ) : null}
         </Box>
       )}
     />

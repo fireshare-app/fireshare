@@ -270,11 +270,22 @@ class VideoInfo(db.Model):
     def __repr__(self):
         return "<VideoInfo {} {}>".format(self.video_id, self.title)
 
+# Public ids for custom games start here. steamgriddb_id doubles as the public
+# game id everywhere (asset directory, /games/<id>, nginx alias), so a game that
+# never came from SteamGridDB still needs one. SteamGridDB ids are a few million
+# and climb slowly, so allocating ours at a billion plus the row id keeps the two
+# namespaces apart without touching any of those routes.
+CUSTOM_GAME_ID_BASE = 1_000_000_000
+
+
 class GameMetadata(db.Model):
     __tablename__ = "game_metadata"
 
     id                  = db.Column(db.Integer, primary_key=True)
     steamgriddb_id      = db.Column(db.Integer, index=True, nullable=True)
+    # True for a game a curator added by hand with uploaded artwork. Its
+    # steamgriddb_id is CUSTOM_GAME_ID_BASE + id, never a real SteamGridDB id.
+    is_custom           = db.Column(db.Boolean, nullable=False, default=False, server_default='0')
     name                = db.Column(db.String(256), index=True, nullable=False)
     release_date        = db.Column(db.String(64), nullable=True)
     hero_url            = db.Column(db.String(2048), nullable=True)
@@ -307,6 +318,7 @@ class GameMetadata(db.Model):
         return {
             "id": self.id,
             "steamgriddb_id": self.steamgriddb_id,
+            "custom": bool(self.is_custom),
             "name": self.name,
             "release_date": self.release_date,
             "hero_url": hero_url,
