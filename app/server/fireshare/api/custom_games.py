@@ -116,17 +116,28 @@ def search_custom_games(query):
 def _parse_crop(raw, width, height):
     """A crop rectangle from the client as a PIL box, or None when absent.
 
-    The client sends {"x", "y", "width", "height"} in source pixels. It works
-    those out from a scaled preview, so a pixel of drift past an edge is expected
-    and clamped rather than rejected.
+    The client sends {"x", "y", "width", "height"} in the pixels of the image as
+    the browser decoded it, plus that image's "naturalWidth" and "naturalHeight".
+    The browser and Pillow can disagree on the size: an .ico holds several sizes
+    and each picks its own frame. When they do, the rectangle is scaled to the
+    size decoded here. It is worked out from a scaled preview, so a pixel of
+    drift past an edge is expected and clamped rather than rejected.
     """
     if raw in (None, ''):
         return None
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw
-        x, y, w, h = (int(round(float(data[k]))) for k in ('x', 'y', 'width', 'height'))
-    except (TypeError, ValueError, KeyError):
+        x, y, w, h = (float(data[k]) for k in ('x', 'y', 'width', 'height'))
+        natural_w = float(data.get('naturalWidth') or width)
+        natural_h = float(data.get('naturalHeight') or height)
+    except (TypeError, ValueError, KeyError, AttributeError):
         raise AssetError('Invalid crop rectangle.')
+    if natural_w <= 0 or natural_h <= 0:
+        raise AssetError('Invalid crop rectangle.')
+    if (natural_w, natural_h) != (width, height):
+        sx, sy = width / natural_w, height / natural_h
+        x, y, w, h = x * sx, y * sy, w * sx, h * sy
+    x, y, w, h = (int(round(v)) for v in (x, y, w, h))
     x = max(0, min(x, width - 1))
     y = max(0, min(y, height - 1))
     w = max(1, min(w, width - x))
