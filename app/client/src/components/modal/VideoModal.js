@@ -48,7 +48,7 @@ import GameSearch from '../game/GameSearch'
 import SuggestionCard from '../cards/SuggestionCard'
 import UploaderMention from '../user/UploaderMention'
 import WaveformCropper from './WaveformCropper'
-import TonemapCompareModal, { TONEMAP_LABELS } from './TonemapCompareModal'
+import TonemapControls from './TonemapControls'
 
 const URL = getUrl()
 const PURL = getPublicWatchUrl()
@@ -87,15 +87,6 @@ const rowBoxSx = {
   borderRadius: '8px',
   px: 1.5,
   py: 1,
-}
-
-const smallBtnSx = {
-  fontSize: 12,
-  textTransform: 'none',
-  color: '#fff',
-  borderColor: '#FFFFFF44',
-  '&:hover': { borderColor: '#FFFFFF99', bgcolor: '#FFFFFF11' },
-  '&.Mui-disabled': { color: '#FFFFFF55', borderColor: '#FFFFFF1A' },
 }
 
 const actionBtnSx = {
@@ -258,14 +249,6 @@ const VideoModal = ({
   const [suggestions, setSuggestions] = React.useState([])
   const [cropProcessing, setCropProcessing] = React.useState(false)
   const [playerVersion, setPlayerVersion] = React.useState(0)
-  // HDR sources: the tone map in progress, what this server can run, the operator
-  // staged in the row's select, and the compare modal.
-  const [tonemapProcessing, setTonemapProcessing] = React.useState(false)
-  const [tonemapCaps, setTonemapCaps] = React.useState(null)
-  const [stagedTonemap, setStagedTonemap] = React.useState('')
-  const [compareOpen, setCompareOpen] = React.useState(false)
-  const [removeTonemapConfirm, setRemoveTonemapConfirm] = React.useState(false)
-  const tonemapPollRef = React.useRef(null)
 
   const playerRef = React.useRef()
   const waveformRef = React.useRef(null)
@@ -463,88 +446,12 @@ const VideoModal = ({
   useEffect(() => {
     if (!open) {
       clearInterval(cropPollRef.current)
-      clearInterval(tonemapPollRef.current)
       setCropProcessing(false)
-      setTonemapProcessing(false)
-      setCompareOpen(false)
-      setStagedTonemap('')
       // Drop the player wrapper so the unmounted <video> element it references
       // can be garbage collected along with its decoder resources.
       playerRef.current = null
     }
   }, [open])
-
-  // The SDR copy is built in the background after a tone map is applied. Poll until
-  // it is in place (or failed), then move the player onto it.
-  const startTonemapPoll = (videoId) => {
-    clearInterval(tonemapPollRef.current)
-    tonemapPollRef.current = setInterval(async () => {
-      try {
-        const res = await VideoService.getDetails(videoId)
-        const info = res.data?.info
-        if (!info) return
-        if (info.has_sdr || info.sdr_error || !info.tonemap) {
-          clearInterval(tonemapPollRef.current)
-          setVideo((prev) => (prev ? { ...prev, info: { ...prev.info, ...info } } : prev))
-          setPlayerVersion((v) => v + 1)
-          setPosterCacheKey(Date.now())
-          if (info.sdr_error) setAlert({ type: 'error', message: `SDR copy failed: ${info.sdr_error}`, open: true })
-        }
-      } catch {
-        // ignore transient poll errors
-      }
-    }, 3000)
-  }
-
-  useEffect(() => {
-    const info = vid?.info
-    const converting = Boolean(info?.tonemap) && !info?.has_sdr && !info?.sdr_error
-    setTonemapProcessing(converting)
-    // Viewers keep watching the original while the copy is built; only an editor
-    // (who sees the row's status) needs to hear when it is ready.
-    if (converting && open && authenticated) startTonemapPoll(vid.video_id)
-    else clearInterval(tonemapPollRef.current)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, authenticated, vid?.video_id, vid?.info?.tonemap, vid?.info?.has_sdr, vid?.info?.sdr_error])
-
-  useEffect(() => {
-    if (!editMode || !authenticated || !vid?.info?.is_hdr || tonemapCaps) return
-    VideoService.getTonemapCapabilities()
-      .then((res) => setTonemapCaps(res.data))
-      .catch(() => setTonemapCaps({ operators: [], auto_default: null }))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode, authenticated, vid?.info?.is_hdr])
-
-  const applyTonemap = async (operator) => {
-    try {
-      await VideoService.setTonemap(vid.video_id, operator)
-      setCompareOpen(false)
-      setStagedTonemap('')
-      setVideo((prev) => ({ ...prev, info: { ...prev.info, tonemap: operator, has_sdr: false, sdr_error: null } }))
-      setAlert({
-        type: 'info',
-        message: `Converting to SDR with ${TONEMAP_LABELS[operator] || operator}. The player switches over when it is ready.`,
-        open: true,
-      })
-    } catch (err) {
-      setAlert({ type: 'error', message: err.response?.data?.message || 'Failed to apply the tone map', open: true })
-    }
-  }
-
-  const removeTonemap = async () => {
-    setRemoveTonemapConfirm(false)
-    try {
-      await VideoService.setTonemap(vid.video_id, null)
-      setCompareOpen(false)
-      setStagedTonemap('')
-      setVideo((prev) => ({ ...prev, info: { ...prev.info, tonemap: null, has_sdr: false, sdr_error: null } }))
-      setPlayerVersion((v) => v + 1)
-      setPosterCacheKey(Date.now())
-      setAlert({ type: 'info', message: 'Tone map removed. The source is the HDR original again.', open: true })
-    } catch (err) {
-      setAlert({ type: 'error', message: err.response?.data?.message || 'Failed to remove the tone map', open: true })
-    }
-  }
 
   const handleGameLinked = async (game, warning) => {
     try {
@@ -1422,157 +1329,19 @@ const VideoModal = ({
                     {editMode && authenticated && vid.info?.is_hdr && (
                       <Box>
                         <Typography sx={labelSx}>Dynamic Range</Typography>
-                        {(() => {
-                          const info = vid.info
-                          const ops = tonemapCaps?.operators || []
-                          const value = stagedTonemap || info.tonemap || tonemapCaps?.auto_default || ''
-                          const selectedOp = ops.find((o) => o.id === value)
-                          const canApply =
-                            Boolean(value) &&
-                            Boolean(selectedOp?.available) &&
-                            !tonemapProcessing &&
-                            (value !== info.tonemap || !info.has_sdr)
-                          const status = tonemapProcessing
-                            ? {
-                                text: `Converting to SDR with ${TONEMAP_LABELS[info.tonemap] || info.tonemap}…`,
-                                color: '#4AA3FF',
-                              }
-                            : info.sdr_error
-                              ? { text: `SDR copy failed: ${info.sdr_error}`, color: '#FF6B6B' }
-                              : info.has_sdr
-                                ? {
-                                    text: `Plays as SDR · ${TONEMAP_LABELS[info.tonemap] || info.tonemap}`,
-                                    color: '#4CC08A',
-                                  }
-                                : {
-                                    text: 'Plays the HDR original, which looks washed out on most displays',
-                                    color: '#FFFFFF80',
-                                  }
-                          return (
-                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                                <Chip
-                                  label="HDR"
-                                  size="small"
-                                  sx={{
-                                    height: 18,
-                                    fontSize: 10,
-                                    color: '#F0824A',
-                                    border: '1px solid #F0824A',
-                                    bgcolor: 'transparent',
-                                    '& .MuiChip-label': { px: 0.75 },
-                                  }}
-                                />
-                                <Typography sx={{ fontSize: 12, color: status.color }}>{status.text}</Typography>
-                              </Box>
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                                <select
-                                  value={value}
-                                  disabled={tonemapProcessing || ops.length === 0}
-                                  onChange={(e) => setStagedTonemap(e.target.value)}
-                                  aria-label="Tone map operator"
-                                  style={{
-                                    background: '#FFFFFF0D',
-                                    color: 'white',
-                                    border: '1px solid #FFFFFF26',
-                                    borderRadius: 8,
-                                    padding: '6px 8px',
-                                    fontSize: 13,
-                                    flex: 1,
-                                    minWidth: 120,
-                                  }}
-                                >
-                                  {ops.length === 0 && (
-                                    <option value="">
-                                      {tonemapCaps ? 'No tone map filters in this ffmpeg' : 'Loading…'}
-                                    </option>
-                                  )}
-                                  {ops.map((o) => (
-                                    <option key={o.id} value={o.id} disabled={!o.available}>
-                                      {TONEMAP_LABELS[o.id] || o.id}
-                                      {o.id === tonemapCaps?.auto_default ? ' (default)' : ''}
-                                      {o.available ? '' : ' – unavailable'}
-                                    </option>
-                                  ))}
-                                </select>
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  disabled={!canApply}
-                                  onClick={() => applyTonemap(value)}
-                                  sx={smallBtnSx}
-                                >
-                                  Apply
-                                </Button>
-                                <Button
-                                  size="small"
-                                  variant="outlined"
-                                  disabled={tonemapProcessing || ops.length === 0}
-                                  onClick={() => setCompareOpen(true)}
-                                  sx={smallBtnSx}
-                                >
-                                  Compare…
-                                </Button>
-                              </Box>
-                              {info.tonemap &&
-                                !tonemapProcessing &&
-                                (removeTonemapConfirm ? (
-                                  <Box
-                                    sx={{
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      gap: 1,
-                                      flexWrap: 'wrap',
-                                      p: 1,
-                                      borderRadius: '8px',
-                                      bgcolor: '#F0824A14',
-                                      border: '1px solid #F0824A44',
-                                    }}
-                                  >
-                                    <Typography sx={{ fontSize: 12, flex: 1, minWidth: 160 }}>
-                                      Delete the SDR copy and play the HDR original again?
-                                    </Typography>
-                                    <Button
-                                      size="small"
-                                      variant="outlined"
-                                      onClick={() => setRemoveTonemapConfirm(false)}
-                                      sx={smallBtnSx}
-                                    >
-                                      Keep
-                                    </Button>
-                                    <Button
-                                      size="small"
-                                      variant="outlined"
-                                      onClick={removeTonemap}
-                                      sx={{
-                                        ...smallBtnSx,
-                                        color: '#F5A37C',
-                                        borderColor: '#F0824A66',
-                                        '&:hover': { borderColor: '#F0824A', bgcolor: '#F0824A1F' },
-                                      }}
-                                    >
-                                      Remove
-                                    </Button>
-                                  </Box>
-                                ) : (
-                                  <Button
-                                    size="small"
-                                    variant="text"
-                                    onClick={() => setRemoveTonemapConfirm(true)}
-                                    sx={{
-                                      alignSelf: 'flex-start',
-                                      fontSize: 12,
-                                      textTransform: 'none',
-                                      color: '#F5A37C',
-                                      px: 0.5,
-                                    }}
-                                  >
-                                    Remove tone map
-                                  </Button>
-                                ))}
-                            </Box>
-                          )
-                        })()}
+                        <TonemapControls
+                          videoId={vid.video_id}
+                          videoInfo={vid.info}
+                          onInfoChange={(info) =>
+                            setVideo((prev) => (prev ? { ...prev, info: { ...prev.info, ...info } } : prev))
+                          }
+                          onConverted={() => {
+                            setPlayerVersion((v) => v + 1)
+                            setPosterCacheKey(Date.now())
+                          }}
+                          alertHandler={setAlert}
+                          getCurrentTime={() => playerRef.current?.currentTime() ?? 0}
+                        />
                       </Box>
                     )}
 
@@ -1881,19 +1650,6 @@ const VideoModal = ({
           </motion.div>
         </Box>
       </Modal>
-      {vid && (
-        <TonemapCompareModal
-          open={compareOpen}
-          onClose={() => setCompareOpen(false)}
-          videoId={vid.video_id}
-          videoInfo={vid.info}
-          capabilities={tonemapCaps}
-          getCurrentTime={() => playerRef.current?.currentTime() ?? 0}
-          onApply={applyTonemap}
-          onRemove={removeTonemap}
-          busy={tonemapProcessing}
-        />
-      )}
     </>
   )
 }

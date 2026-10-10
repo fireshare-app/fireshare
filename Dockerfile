@@ -39,7 +39,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libmp3lame-dev \
     libwebp-dev \
     libzimg-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libvulkan-dev \
+    glslang-dev \
+    spirv-tools \
+    liblcms2-dev \
+    python3 \
+    python3-pip \
+    ninja-build \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir 'meson>=1.0'
 
 # Build SVT-AV1 from source, V1.8.0 for FFmpeg 6.1
 RUN git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git && \
@@ -47,6 +55,23 @@ RUN git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.
     cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc) && \
     make install
+
+# Vulkan headers for FFmpeg 6.1's Vulkan code, which wants >= 1.3.255 (jammy ships 1.3.204).
+# Header-only; the loader stays jammy's libvulkan1.
+RUN git clone --depth 1 --branch v1.3.255 https://github.com/KhronosGroup/Vulkan-Headers.git && \
+    cmake -S Vulkan-Headers -B Vulkan-Headers/build -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    cmake --install Vulkan-Headers/build && rm -rf Vulkan-Headers
+
+# libplacebo, for the bt.2390 HDR -> SDR tone map. Built from source because jammy's
+# 4.192 does not compile against FFmpeg 6.1's filter; v6.338 is the series 6.1 was
+# developed against. jammy's static glslang is linked in, so it needs no runtime package.
+RUN git clone --depth 1 --recursive --branch v6.338.2 https://github.com/haasn/libplacebo.git && \
+    cd libplacebo && \
+    meson setup build --prefix=/usr/local --libdir=lib --buildtype=release \
+        -Dvulkan=enabled -Dglslang=enabled -Dshaderc=disabled -Dlcms=enabled \
+        -Dopengl=disabled -Dd3d11=disabled -Ddemos=false -Dtests=false && \
+    ninja -C build && ninja -C build install && ldconfig && \
+    cd .. && rm -rf libplacebo
 
 # Install NVIDIA codec headers for NVENC support
 RUN git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-headers.git && \
@@ -61,7 +86,7 @@ RUN wget -q https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz && \
 # Configure FFmpeg with NVENC and all necessary encoders. libzimg provides zscale, which
 # the HDR -> SDR tone map needs to get frames into linear light.
 RUN cd ffmpeg-6.1 && \
-    ./configure \
+    PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig ./configure \
         --prefix=/usr/local \
         --enable-gpl \
         --enable-version3 \
@@ -80,6 +105,8 @@ RUN cd ffmpeg-6.1 && \
         --enable-libsvtav1 \
         --enable-libwebp \
         --enable-libzimg \
+        --enable-libplacebo \
+        --enable-vulkan \
         --disable-debug \
         --disable-doc
 
@@ -89,8 +116,9 @@ RUN cd ffmpeg-6.1 && \
     make install && \
     ldconfig
 
-# Verify FFmpeg was built correctly
+# Verify FFmpeg was built correctly, with the tone map filters
 RUN ffmpeg -version && \
+    ffmpeg -hide_banner -filters | grep -E ' (zscale|tonemap|libplacebo)[ ]' && \
     ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(nvenc|264|265|vpx|aom|svt)" | head -20
 
 # Python build stage — compiles Python 3.14 from source; works on all architectures
@@ -138,6 +166,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     libopus0 libvorbis0a libvorbisenc2 \
     libass9 libfreetype6 libmp3lame0 libwebp7 libwebpmux3 \
     libzimg2 \
+    liblcms2-2 libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-source /opt/python3.14 /opt/python3.14
@@ -192,10 +221,12 @@ ENV ANALYTICS_TRACKING_SCRIPT=""
 ENV TZ=UTC
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 # The NVIDIA Container Toolkit only mounts the NVENC/NVDEC libraries when the
-# "video" driver capability is requested. The CUDA base image defaults to
-# "compute,utility", which leaves ffmpeg without libnvidia-encode.so.1 and
-# silently forces CPU transcoding. Users may still override this at run time.
-ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+# "video" driver capability is requested, and the Vulkan driver (which lets the
+# bt.2390 tone map run on the GPU instead of Mesa's software Vulkan) only with
+# "graphics". The CUDA base image defaults to "compute,utility", which leaves
+# ffmpeg without libnvidia-encode.so.1 and silently forces CPU transcoding.
+# Users may still override this at run time.
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics
 ENV PATH=/opt/python3.14/bin:/usr/local/bin:$PATH
 
 EXPOSE 80

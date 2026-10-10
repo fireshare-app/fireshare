@@ -125,7 +125,7 @@ const CompactVideoCard = ({
 
   const cardRef = React.useRef(null)
   const isTouchDevice = React.useRef(
-    typeof window !== 'undefined' && window.matchMedia('(hover: none) and (pointer: coarse)').matches
+    typeof window !== 'undefined' && window.matchMedia('(hover: none) and (pointer: coarse)').matches,
   )
 
   React.useEffect(() => {
@@ -451,6 +451,8 @@ const CompactVideoCard = ({
         currentGame={game}
         currentHasPassword={intVideo?.info?.has_password}
         currentUploader={intVideo?.uploader}
+        currentInfo={intVideo?.info}
+        onInfoChange={(info) => setIntVideo((v) => ({ ...v, info: { ...v.info, ...info } }))}
         alertHandler={alertHandler}
       />
 
