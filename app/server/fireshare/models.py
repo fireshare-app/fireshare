@@ -218,6 +218,13 @@ class VideoInfo(db.Model):
     start_time    = db.Column(db.Float, nullable=True)
     end_time      = db.Column(db.Float, nullable=True)
     has_crop      = db.Column(db.Boolean, default=False)
+    # HDR sources. is_hdr is None until the stored stream tags have been checked.
+    # tonemap is the operator the SDR copy is made with (None: none wanted), has_sdr
+    # says the copy is in place, and sdr_error keeps the last failure for the editor.
+    is_hdr        = db.Column(db.Boolean, nullable=True)
+    tonemap       = db.Column(db.String(16), nullable=True)
+    has_sdr       = db.Column(db.Boolean, default=False)
+    sdr_error     = db.Column(db.String(512), nullable=True)
     password_hash = db.Column(db.String(256), nullable=True)
 
     video       = db.relationship("Video", back_populates="info", uselist=False, lazy="joined")
@@ -227,6 +234,17 @@ class VideoInfo(db.Model):
         info = json.loads(self.info) if self.info else None
         vcodec = [i for i in info if i["codec_type"] == "video"][0] if info else None
         return vcodec
+
+    @property
+    def hdr_format(self):
+        """'pq' or 'hlg' for an HDR source (an untagged one is taken as PQ), else None."""
+        if not self.is_hdr:
+            return None
+        try:
+            transfer = (self.vcodec or {}).get('color_transfer') or ''
+        except (IndexError, TypeError, ValueError):
+            transfer = ''
+        return 'hlg' if transfer.lower() == 'arib-std-b67' else 'pq'
 
     @property
     def framerate(self):
@@ -264,6 +282,11 @@ class VideoInfo(db.Model):
             "start_time": self.start_time,
             "end_time": self.end_time,
             "has_crop": self.has_crop or False,
+            "is_hdr": bool(self.is_hdr),
+            "hdr_format": self.hdr_format,
+            "tonemap": self.tonemap,
+            "has_sdr": self.has_sdr or False,
+            "sdr_error": self.sdr_error,
             "has_password": bool(self.password_hash),
         }
 

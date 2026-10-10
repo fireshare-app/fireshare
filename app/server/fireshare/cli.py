@@ -884,10 +884,31 @@ def sync_metadata(video):
                 v.duration = duration
                 v.width = width
                 v.height = height
+                v.is_hdr = util.is_hdr_stream(vcodec)
                 db.session.add(v)
                 db.session.commit()
             else:
                 logger.warning(f"Missing or invalid symlink at {vpath} to video {v.video_id} (original location: {v.video.path})")
+
+@cli.command()
+@click.option("--all", "all_videos", is_flag=True, help="Re-check every video, not only those never checked")
+def detect_hdr(all_videos):
+    """Flag HDR videos from the colour tags sync-metadata already stored."""
+    with create_app().app_context():
+        query = VideoInfo.query.filter(VideoInfo.info != None)
+        if not all_videos:
+            query = query.filter(VideoInfo.is_hdr == None)
+        videos = query.all()
+        flagged = 0
+        for v in videos:
+            try:
+                v.is_hdr = util.is_hdr_stream(v.vcodec)
+            except (IndexError, TypeError, ValueError):
+                v.is_hdr = False
+            flagged += 1 if v.is_hdr else 0
+        if videos:
+            db.session.commit()
+            logger.info(f"Checked {len(videos):,} video(s) for HDR, {flagged:,} flagged")
 
 @cli.command()
 def create_web_videos():
@@ -1043,6 +1064,74 @@ def transcode_videos(regenerate, video, include_corrupt):
                 if skipped_count > 0:
                     logger.info(f"Skipping {skipped_count} video(s) previously marked as corrupt. Use --include-corrupt to retry them.")
 
+            # HDR videos get their SDR copy first, and the transcodes are then made from
+            # it: one with an operator chosen but no copy yet (an interrupted save, or a
+            # server that lacked the filters at the time), and, with automatic tone
+            # mapping on, any HDR video nothing has been chosen for yet.
+            auto_tonemap = transcoding_config.get('auto_tonemap', False)
+            tonemap_default = None
+            if auto_tonemap:
+                tonemap_default = util.resolve_tonemap_default(transcoding_config.get('tonemap_default', 'auto'))
+                if not tonemap_default:
+                    logger.warning("Automatic tone mapping is on, but this ffmpeg build has no tone map filters")
+            sdr_items = []
+            for vi in vinfos:
+                if not vi.is_hdr:
+                    continue
+                video_path = Path(processed_root, "video_links", vi.video_id + vi.video.extension)
+                if not video_path.exists():
+                    continue
+                derived_path = Path(processed_root, "derived", vi.video_id)
+                sdr_path = derived_path / f"{vi.video_id}-sdr.mp4"
+                if vi.tonemap:
+                    if sdr_path.exists():
+                        if not vi.has_sdr:
+                            vi.has_sdr = True
+                            db.session.commit()
+                        continue
+                    if vi.sdr_error and not regenerate:
+                        continue  # failed before; saving the video again retries it
+                    sdr_items.append((vi, video_path, derived_path, sdr_path))
+                elif tonemap_default and not vi.has_sdr and not vi.sdr_error:
+                    vi.tonemap = tonemap_default
+                    db.session.commit()
+                    sdr_items.append((vi, video_path, derived_path, sdr_path))
+            for idx, (vi, video_path, derived_path, sdr_path) in enumerate(sdr_items, 1):
+                util.write_transcoding_status(paths['data'], idx, len(sdr_items), vi.title, resolution='SDR')
+                derived_path.mkdir(parents=True, exist_ok=True)
+                with util.video_lock(vi.video_id, wait=False) as locked:
+                    if not locked:
+                        logger.info(f"Skipping SDR copy of {vi.video_id} - the video is being edited")
+                        continue
+                    try:
+                        db.session.refresh(vi)
+                    except InvalidRequestError:
+                        continue
+                    if not vi.tonemap or sdr_path.exists():
+                        continue
+                    cropped_path = derived_path / f"{vi.video_id}-cropped.mp4"
+                    source_path = cropped_path if vi.has_crop and cropped_path.exists() else video_path
+                    logger.info(f"[{idx}/{len(sdr_items)}] Tone mapping {vi.video_id} to SDR with {vi.tonemap} ({vi.video.path})")
+                    success, failure_reason = util.create_sdr_video(
+                        source_path, sdr_path, vi.tonemap, use_gpu, encoder_preference,
+                        data_path=paths['data'], assume_pq=util.stream_needs_pq_assumed(vi.vcodec),
+                    )
+                    if success:
+                        vi.has_sdr = True
+                        vi.sdr_error = None
+                        # Whatever transcodes exist were made from the HDR source; they
+                        # are remade from the SDR copy below.
+                        for height in resolutions:
+                            transcode_path = derived_path / f"{vi.video_id}-{height}p.mp4"
+                            if transcode_path.exists():
+                                transcode_path.unlink()
+                            setattr(vi, f'has_{height}p', False)
+                    else:
+                        vi.sdr_error = util.sdr_failure_message(failure_reason)
+                        logger.warning(f"SDR copy of {vi.video_id} failed: {vi.sdr_error}")
+                    db.session.add(vi)
+                    db.session.commit()
+
             # Build work queue: list of (video_info, height) tuples that actually need transcoding
             # Also reconcile has_* flags if outputs already exist on disk.
             work_items = []
@@ -1173,8 +1262,16 @@ def transcode_videos(regenerate, video, include_corrupt):
                     # A cropped video's transcodes are made from the crop, as the crop
                     # pipeline makes them. From the original they would play the whole
                     # uncut video to anyone moved down to a lower quality.
+                    # Likewise a tone-mapped video's transcodes come from its SDR copy,
+                    # or every quality but the source would still play washed out.
+                    sdr_path = derived_path / f"{vi.video_id}-sdr.mp4"
                     cropped_path = derived_path / f"{vi.video_id}-cropped.mp4"
-                    source_path = cropped_path if vi.has_crop and cropped_path.exists() else video_path
+                    if vi.has_sdr and sdr_path.exists():
+                        source_path = sdr_path
+                    elif vi.has_crop and cropped_path.exists():
+                        source_path = cropped_path
+                    else:
+                        source_path = video_path
 
                     logger.info(f"[{idx}/{total_jobs}] Transcoding {vi.video_id} to {height}p ({vi.video.path})")
                     success, failure_reason = util.transcode_video_quality(
@@ -1223,6 +1320,9 @@ def bulk_import(ctx, root):
         s = time.time()
         ctx.invoke(sync_metadata)
         timing['sync_metadata'] = time.time() - s
+        s = time.time()
+        ctx.invoke(detect_hdr)
+        timing['detect_hdr'] = time.time() - s
         s = time.time()
         ctx.invoke(create_posters, skip=thumbnail_skip)
         timing['create_posters'] = time.time() - s

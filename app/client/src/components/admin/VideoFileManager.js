@@ -337,20 +337,43 @@ const VideoFileRow = React.memo(function VideoFileRow({ file, isSelected, onTogg
       {/* Cropped */}
       {!hiddenColumns.has('Cropped') && (
         <TableCell sx={{ ...bodyCellSx }}>
-          {file.has_crop ? (
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <Chip
-                label="Cropped"
-                size="small"
-                sx={{
-                  height: 17,
-                  fontSize: 10,
-                  bgcolor: '#FF990018',
-                  color: '#FF9900BB',
-                  border: '1px solid #FF990033',
-                  '& .MuiChip-label': { px: 0.75 },
-                }}
-              />
+          {file.has_crop || file.is_hdr ? (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              {file.has_crop && (
+                <Chip
+                  label="Cropped"
+                  size="small"
+                  sx={{
+                    height: 17,
+                    fontSize: 10,
+                    bgcolor: '#FF990018',
+                    color: '#FF9900BB',
+                    border: '1px solid #FF990033',
+                    '& .MuiChip-label': { px: 0.75 },
+                  }}
+                />
+              )}
+              {file.is_hdr && (
+                <Chip
+                  label={file.has_sdr ? 'SDR' : 'HDR'}
+                  title={
+                    file.has_sdr
+                      ? `Tone mapped to SDR (${file.tonemap})`
+                      : file.tonemap
+                        ? 'HDR, converting to SDR'
+                        : 'HDR source, plays as stored'
+                  }
+                  size="small"
+                  sx={{
+                    height: 17,
+                    fontSize: 10,
+                    bgcolor: file.has_sdr ? '#1DB95418' : '#F0824A18',
+                    color: file.has_sdr ? '#1DB954' : '#F0824ABB',
+                    border: `1px solid ${file.has_sdr ? '#1DB95433' : '#F0824A33'}`,
+                    '& .MuiChip-label': { px: 0.75 },
+                  }}
+                />
+              )}
             </Box>
           ) : (
             <Typography sx={{ fontSize: 11, color: '#FFFFFF33' }}>—</Typography>

@@ -40,6 +40,10 @@ DEFAULT_CONFIG = {
     "enable_480p": True,
     "enable_720p": True,
     "enable_1080p": True,
+    # HDR -> SDR tone mapping. "auto" is bt.2390 on a GPU and hable otherwise; the
+    # automatic conversion of every HDR video stays off until an admin turns it on.
+    "tonemap_default": "auto",
+    "auto_tonemap": False,
   }
 }
 

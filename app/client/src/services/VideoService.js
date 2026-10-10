@@ -148,6 +148,16 @@ const service = {
   rejectGameSuggestion(videoId) {
     return Api().delete(`/api/videos/${videoId}/game/suggestion`)
   },
+  getTonemapCapabilities() {
+    return Api().get('/api/video/tonemap/capabilities')
+  },
+  getTonemapFrames(id, count = 3) {
+    return Api().get(`/api/video/${id}/tonemap/frames`, { params: { count } })
+  },
+  // Apply an operator, or null to remove the SDR copy. The server rebuilds in the background.
+  setTonemap(id, tonemap) {
+    return Api().put(`/api/video/details/${id}`, { tonemap })
+  },
   uploadCustomPoster(id, formData) {
     return Api().post(`/api/video/${id}/poster/custom`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },

@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfreetype6-dev \
     libmp3lame-dev \
     libwebp-dev \
+    libzimg-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Build SVT-AV1 from source, V1.8.0 for FFmpeg 6.1
@@ -57,7 +58,8 @@ RUN git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-h
 RUN wget -q https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz && \
     tar -xf ffmpeg-6.1.tar.xz
 
-# Configure FFmpeg with NVENC and all necessary encoders
+# Configure FFmpeg with NVENC and all necessary encoders. libzimg provides zscale, which
+# the HDR -> SDR tone map needs to get frames into linear light.
 RUN cd ffmpeg-6.1 && \
     ./configure \
         --prefix=/usr/local \
@@ -77,6 +79,7 @@ RUN cd ffmpeg-6.1 && \
         --enable-libfreetype \
         --enable-libsvtav1 \
         --enable-libwebp \
+        --enable-libzimg \
         --disable-debug \
         --disable-doc
 
@@ -134,6 +137,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     libx264-163 libx265-199 libvpx7 libaom3 libdav1d5 \
     libopus0 libvorbis0a libvorbisenc2 \
     libass9 libfreetype6 libmp3lame0 libwebp7 libwebpmux3 \
+    libzimg2 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-source /opt/python3.14 /opt/python3.14

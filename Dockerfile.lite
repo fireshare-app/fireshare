@@ -8,7 +8,9 @@ RUN npm ci --silent
 COPY app/client/ ./
 RUN npm run build
 
-# Main application stage — Debian slim with Python 3.14 built in, no CUDA, no source-built FFmpeg
+# Main application stage — Debian slim with Python 3.14 built in, no CUDA, no source-built FFmpeg.
+# Debian's ffmpeg carries zscale, tonemap and libplacebo; the Mesa Vulkan driver gives
+# libplacebo (the bt.2390 tone map) a device on hosts without a GPU.
 FROM python:3.14-slim-bookworm
 WORKDIR /
 
@@ -21,6 +23,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     ca-certificates \
     tzdata \
     ffmpeg \
+    libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/* /root/.cache/pip /tmp/*
 
 RUN ln -sf /dev/stdout /var/log/nginx/access.log \
