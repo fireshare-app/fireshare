@@ -286,17 +286,24 @@ const getSourceMedia = (videoInfo, extension, { hasCrop, forceOriginal, hdrForma
   return media
 }
 
+// Firefox answers the HDR media queries like any other browser but does not render HDR
+// video to match: nothing on macOS and Linux, and on Windows only from Firefox 153 with
+// mixed results, so a PQ original plays flat and grey. It gets the SDR copy unless the
+// viewer picks the original by hand (see getHdrPreference).
+const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent)
+
 /**
- * Whether this browser will actually show HDR video on this display. Only the
- * video-specific query counts: the general `dynamic-range` one is true on displays that
- * are merely HDR-capable, which Firefox (no HDR video output at all) and Chrome on
- * Windows with HDR switched off both report, and then the original plays washed out.
- * False where the query is unknown, so an old browser is treated as SDR.
+ * Whether this browser will show HDR video on this display. Chrome reports
+ * `dynamic-range: high` only while the display is in HDR mode, and Safari only on EDR
+ * displays, so the query is a fair signal for them. `video-dynamic-range` would be the
+ * precise one, but Chrome keeps it behind a flag and Safari lacks it, so it is only
+ * a bonus. False where the queries are unknown, so an old browser is treated as SDR.
  */
 export const displaySupportsHdr = () =>
+  !isFirefox &&
   typeof window !== 'undefined' &&
   typeof window.matchMedia === 'function' &&
-  window.matchMedia('(video-dynamic-range: high)').matches
+  (window.matchMedia('(video-dynamic-range: high)').matches || window.matchMedia('(dynamic-range: high)').matches)
 
 // Which Source variant the viewer picked by hand on this device: 'hdr', 'sdr', or null
 // when they never have. The detection above is only a guess; a choice beats it.
