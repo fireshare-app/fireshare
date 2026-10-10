@@ -53,7 +53,18 @@ const ACCEPT = 'image/png,image/jpeg,image/webp,image/x-icon,image/vnd.microsoft
 const ACCEPTED_TYPES = /^image\/(png|jpeg|webp|x-icon|vnd\.microsoft\.icon)$/
 const isAcceptedFile = (file) => ACCEPTED_TYPES.test(file.type) || /\.ico$/i.test(file.name)
 const MAX_UPLOAD_MB = 20
-const FRAME_HEIGHT = { hero: 230, banner: 230, logo: 230, icon: 220 }
+
+// The crop frame has the slot's own shape. The image is scaled to cover it, so
+// one that already has that shape is shown whole, scaled down to fit, and only
+// a mismatched one is centred and cropped. A frame of some other shape would
+// scale a matching image to the frame's width and crop away most of it.
+const frameSx = (type, value) => {
+  const spec = ASSET_SPECS[type]
+  if (spec.aspect === 1) return { width: 'min(100%, 260px)', aspectRatio: '1 / 1', mx: 'auto' }
+  if (spec.aspect) return { width: '100%', aspectRatio: `${spec.width} / ${spec.height}` }
+  // A logo keeps its own shape; the cap stops a tall one taking over the dialog.
+  return { width: '100%', aspectRatio: `${value.width} / ${value.height}`, maxHeight: 280 }
+}
 
 const readImageSize = (url) =>
   new Promise((resolve, reject) => {
@@ -178,7 +189,6 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
   }
 
   const note = value ? sizeNote(type, value.width, value.height) : null
-  const frameHeight = FRAME_HEIGHT[type]
   const transparent = type === 'logo' || type === 'icon'
 
   return (
@@ -219,8 +229,7 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
           <Box
             sx={{
               position: 'relative',
-              width: '100%',
-              height: frameHeight,
+              ...frameSx(type, value),
               borderRadius: '8px',
               overflow: 'hidden',
               border: '1px solid #FFFFFF26',
