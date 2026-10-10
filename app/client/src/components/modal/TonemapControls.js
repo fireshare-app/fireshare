@@ -8,7 +8,9 @@ const btnSx = {
   textTransform: 'none',
   color: '#fff',
   borderColor: '#FFFFFF44',
-  px: 1.5,
+  px: 2.25,
+  py: 0.75,
+  minHeight: 34,
   '&:hover': { borderColor: '#FFFFFF99', bgcolor: '#FFFFFF11' },
   '&.Mui-disabled': { color: '#FFFFFF55', borderColor: '#FFFFFF1A' },
 }
@@ -181,7 +183,7 @@ const TonemapControls = ({ videoId, videoInfo, onInfoChange, onConverted, alertH
         ))}
       </select>
 
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
         <Button size="small" variant="outlined" disabled={!canApply} onClick={() => apply(value)} sx={btnSx}>
           Apply
         </Button>

@@ -174,73 +174,94 @@ def _rebuild_derived_async(video, paths, heights, start_time=None, end_time=None
         with app.app_context():
             return current_info() is not None
 
+    data_path = paths['data']
+
     def run():
         with util.video_lock(video_id):
+            try:
+                _run_locked()
+            finally:
+                # Progress went through the same status file the scan uses; leave the
+                # scan's own entry alone if it wrote last.
+                util.clear_transcoding_status_if_mine(data_path)
+
+    def _run_locked():
+        with app.app_context():
+            vi = current_info()
+            if not vi:
+                return
+            # Cleared again now that the lock is held: a transcode that was part-way
+            # through this video when the save came in has since written its output.
+            _reset_derived_videos(video_id, vi, derived_dir, keep_crop=keep_crop)
+            duration = vi.duration or 0
+            title = vi.title
+            assume_pq = util.stream_needs_pq_assumed(vi.vcodec) if vi.is_hdr else False
+
+        # The sidebar's live progress: the SDR copy counts as a step, then each
+        # transcode, exactly as the scan reports them.
+        steps_total = (1 if tonemap else 0) + len(heights)
+        step = 0
+
+        source_path, source_duration = original_path, duration
+        if start_time is not None or end_time is not None:
+            # A tone map change keeps the crop it already has; only a crop change
+            # (or a missing file) cuts a new one.
+            if not (keep_crop and cropped_path.exists()):
+                if not util.create_video_crop(original_path, cropped_path, start_time, end_time):
+                    logger.error(f"Crop failed for video {video_id}")
+                    return
+                with app.app_context():
+                    vi = current_info()
+                    if not vi:
+                        return
+                    vi.has_crop = True
+                    db.session.commit()
+            source_path, source_duration = cropped_path, (end_time or duration) - (start_time or 0)
+
+        if tonemap:
+            if not still_current():
+                return
+            step += 1
+            util.write_transcoding_status(data_path, step, steps_total, title, resolution='SDR')
+            success, failure_reason = util.create_sdr_video(
+                source_path, sdr_path, tonemap, use_gpu, encoder_preference, data_path=data_path, assume_pq=assume_pq
+            )
             with app.app_context():
                 vi = current_info()
                 if not vi:
                     return
-                # Cleared again now that the lock is held: a transcode that was part-way
-                # through this video when the save came in has since written its output.
-                _reset_derived_videos(video_id, vi, derived_dir, keep_crop=keep_crop)
-                duration = vi.duration or 0
-                assume_pq = util.stream_needs_pq_assumed(vi.vcodec) if vi.is_hdr else False
+                if success:
+                    vi.has_sdr = True
+                    vi.sdr_error = None
+                    source_path = sdr_path
+                else:
+                    # The transcodes are still made, from the HDR source, so the video
+                    # keeps playing; the editor sees why there is no SDR copy.
+                    vi.sdr_error = util.sdr_failure_message(failure_reason)
+                    logger.error(f"SDR copy of {video_id} failed: {vi.sdr_error}")
+                db.session.commit()
 
-            source_path, source_duration = original_path, duration
-            if start_time is not None or end_time is not None:
-                # A tone map change keeps the crop it already has; only a crop change
-                # (or a missing file) cuts a new one.
-                if not (keep_crop and cropped_path.exists()):
-                    if not util.create_video_crop(original_path, cropped_path, start_time, end_time):
-                        logger.error(f"Crop failed for video {video_id}")
-                        return
-                    with app.app_context():
-                        vi = current_info()
-                        if not vi:
-                            return
-                        vi.has_crop = True
-                        db.session.commit()
-                source_path, source_duration = cropped_path, (end_time or duration) - (start_time or 0)
+        # Regenerate thumbnail from whichever file now plays
+        if not still_current():
+            return
+        util.create_poster(source_path, derived_dir / "poster.jpg", int(source_duration * thumbnail_skip))
 
-            if tonemap:
-                if not still_current():
-                    return
-                success, failure_reason = util.create_sdr_video(
-                    source_path, sdr_path, tonemap, use_gpu, encoder_preference, assume_pq=assume_pq
-                )
-                with app.app_context():
-                    vi = current_info()
-                    if not vi:
-                        return
-                    if success:
-                        vi.has_sdr = True
-                        vi.sdr_error = None
-                        source_path = sdr_path
-                    else:
-                        # The transcodes are still made, from the HDR source, so the video
-                        # keeps playing; the editor sees why there is no SDR copy.
-                        vi.sdr_error = util.sdr_failure_message(failure_reason)
-                        logger.error(f"SDR copy of {video_id} failed: {vi.sdr_error}")
-                    db.session.commit()
-
-            # Regenerate thumbnail from whichever file now plays
+        for height in heights:
             if not still_current():
                 return
-            util.create_poster(source_path, derived_dir / "poster.jpg", int(source_duration * thumbnail_skip))
-
-            for height in heights:
-                if not still_current():
+            step += 1
+            util.write_transcoding_status(data_path, step, steps_total, title, resolution=f'{height}p')
+            success, _ = util.transcode_video_quality(
+                source_path, derived_dir / f"{video_id}-{height}p.mp4", height, use_gpu, None, encoder_preference,
+                data_path=data_path,
+            )
+            with app.app_context():
+                vi = current_info()
+                if not vi:
                     return
-                success, _ = util.transcode_video_quality(
-                    source_path, derived_dir / f"{video_id}-{height}p.mp4", height, use_gpu, None, encoder_preference
-                )
-                with app.app_context():
-                    vi = current_info()
-                    if not vi:
-                        return
-                    if success:
-                        setattr(vi, f'has_{height}p', True)
-                        db.session.commit()
+                if success:
+                    setattr(vi, f'has_{height}p', True)
+                    db.session.commit()
 
     threading.Thread(target=run, daemon=True).start()
 

@@ -220,6 +220,15 @@ def clear_transcoding_status(data_path: Path):
         except Exception as e:
             logger.warning(f"Failed to remove transcoding status file: {e}")
 
+def clear_transcoding_status_if_mine(data_path: Path):
+    """
+    Removes the status file only when this process wrote it last. An editor's rebuild
+    thread reports through the same file as the scheduled scan, which runs in its own
+    process; whichever finishes first must not wipe the other's progress.
+    """
+    if read_transcoding_status(data_path).get('pid') == os.getpid():
+        clear_transcoding_status(data_path)
+
 
 def video_id(path: Path, mb=16):
     """
@@ -959,15 +968,17 @@ def render_tonemap_preview(video_path, seconds, operator, out_dir, width=1280, z
            '-filter_complex', graph,
            '-map', '[tile]', '-frames:v', '1', '-c:v', 'libwebp', '-quality', '85', str(tile_tmp),
            '-map', '[zoom]', '-frames:v', '1', '-c:v', 'libwebp', '-quality', '85', str(crop_tmp)]
-    logger.debug(f"$ {' '.join(cmd)}")
+    # One short line per tile; the full command only matters when it fails.
+    logger.debug(f"Rendering tone map preview {name} for {Path(video_path).name}")
     try:
         result = sp.run(cmd, capture_output=True, text=True, timeout=180)
     except (OSError, sp.SubprocessError) as ex:
-        logger.warning(f"Tone map preview failed for {video_path} at {seconds}s ({operator}): {ex}")
+        logger.warning(f"Tone map preview failed for {video_path} at {seconds}s ({operator}): {ex}\n$ {' '.join(cmd)}")
         result = None
     if result is None or result.returncode != 0 or not tile_tmp.exists() or not crop_tmp.exists():
         if result is not None:
-            logger.warning(f"Tone map preview failed for {video_path} at {seconds}s ({operator}): {result.stderr.strip()[-400:]}")
+            logger.warning(f"Tone map preview failed for {video_path} at {seconds}s ({operator}): "
+                           f"{result.stderr.strip()[-400:]}\n$ {' '.join(cmd)}")
         tile_tmp.unlink(missing_ok=True)
         crop_tmp.unlink(missing_ok=True)
         return None
