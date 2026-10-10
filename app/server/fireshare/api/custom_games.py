@@ -113,15 +113,20 @@ def search_custom_games(query):
 # Image processing
 # ---------------------------------------------------------------------------
 
-def _parse_crop(raw, width, height):
+def _parse_crop(raw, width, height, allow_outside=False):
     """A crop rectangle from the client as a PIL box, or None when absent.
 
     The client sends {"x", "y", "width", "height"} in the pixels of the image as
     the browser decoded it, plus that image's "naturalWidth" and "naturalHeight".
     The browser and Pillow can disagree on the size: an .ico holds several sizes
     and each picks its own frame. When they do, the rectangle is scaled to the
-    size decoded here. It is worked out from a scaled preview, so a pixel of
-    drift past an edge is expected and clamped rather than rejected.
+    size decoded here.
+
+    A fixed-shape slot's rectangle is clamped to the image: it is worked out from
+    a scaled preview, so a pixel of drift past an edge is expected. A logo's may
+    reach outside the image on purpose, which is how a curator adds transparent
+    space around it, so that one is only required to overlap the image and to
+    stay a sane size.
     """
     if raw in (None, ''):
         return None
@@ -138,6 +143,12 @@ def _parse_crop(raw, width, height):
         sx, sy = width / natural_w, height / natural_h
         x, y, w, h = x * sx, y * sy, w * sx, h * sy
     x, y, w, h = (int(round(v)) for v in (x, y, w, h))
+    if allow_outside:
+        if w < 1 or h < 1 or x >= width or y >= height or x + w <= 0 or y + h <= 0:
+            raise AssetError('Invalid crop rectangle.')
+        if w * h > MAX_DECODED_PIXELS:
+            raise AssetError('The crop is too large to process.')
+        return (x, y, x + w, y + h)
     x = max(0, min(x, width - 1))
     y = max(0, min(y, height - 1))
     w = max(1, min(w, width - x))
@@ -197,8 +208,11 @@ def process_asset_upload(file_storage, asset_type, crop_raw, dest_dir):
             img = ImageOps.exif_transpose(img)
             img = img.convert(spec['mode'])
 
-            crop = _parse_crop(crop_raw, img.width, img.height)
+            crop = _parse_crop(crop_raw, img.width, img.height, allow_outside=spec['aspect'] is None)
             if crop:
+                # Pillow fills any part of the box outside the image with zeros,
+                # which for an RGBA logo is transparent: exactly the space a
+                # zoomed-out frame asked for.
                 img = img.crop(crop)
             elif spec['aspect']:
                 img = img.crop(_centered_box(img.width, img.height, spec['aspect']))
@@ -210,9 +224,12 @@ def process_asset_upload(file_storage, asset_type, crop_raw, dest_dir):
                 # will look soft.
                 img = ImageOps.fit(img, spec['size'], method=PILImage.LANCZOS)
             else:
-                # Logo: drop fully transparent borders so the logo itself, not its
-                # canvas, is what the page sizes, then fit inside the box.
-                if img.mode == 'RGBA':
+                # Logo: the frame is what gets saved, including any transparent
+                # space inside it, so the page sizes the logo the way the curator
+                # framed it. Only an upload with no frame at all (an API caller)
+                # has its fully transparent borders dropped, which is also where
+                # the client starts its frame.
+                if crop is None and img.mode == 'RGBA':
                     bbox = img.getchannel('A').getbbox()
                     if bbox:
                         img = img.crop(bbox)

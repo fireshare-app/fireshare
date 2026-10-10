@@ -33,7 +33,7 @@ export const ASSET_SPECS = {
     height: 720,
     aspect: null,
     required: true,
-    hint: 'The game logo on a transparent background, any shape. Transparent edges are trimmed.',
+    hint: 'The game logo on a transparent background, any shape. The frame starts at its visible edges; zoom out for space around it, in to trim.',
   },
   icon: {
     label: 'Icon',
@@ -53,7 +53,20 @@ const ACCEPT = 'image/png,image/jpeg,image/webp,image/x-icon,image/vnd.microsoft
 const ACCEPTED_TYPES = /^image\/(png|jpeg|webp|x-icon|vnd\.microsoft\.icon)$/
 const isAcceptedFile = (file) => ACCEPTED_TYPES.test(file.type) || /\.ico$/i.test(file.name)
 const MAX_UPLOAD_MB = 20
-const FRAME_HEIGHT = { hero: 230, banner: 230, logo: 230, icon: 220 }
+
+// The crop frame has the slot's own shape. The image is scaled to cover it, so
+// one that already has that shape is shown whole, scaled down to fit, and only
+// a mismatched one is centred and cropped. A frame of some other shape would
+// scale a matching image to the frame's width and crop away most of it.
+const frameSx = (type, value) => {
+  const spec = ASSET_SPECS[type]
+  if (spec.aspect === 1) return { width: 'min(100%, 260px)', aspectRatio: '1 / 1', mx: 'auto' }
+  if (spec.aspect) return { width: '100%', aspectRatio: `${spec.width} / ${spec.height}` }
+  // A logo keeps the shape of its visible part; the cap stops a tall one taking
+  // over the dialog.
+  const box = value.box || value
+  return { width: '100%', aspectRatio: `${box.width} / ${box.height}`, maxHeight: 280 }
+}
 
 const readImageSize = (url) =>
   new Promise((resolve, reject) => {
@@ -62,6 +75,66 @@ const readImageSize = (url) =>
     img.onerror = () => reject(new Error('That file could not be read as an image.'))
     img.src = url
   })
+
+// Where a logo's visible pixels are, in natural pixels. Found on a copy no
+// larger than 1024px so a big PNG doesn't cost a full-size readback, then
+// widened by a pixel so the edge is never clipped. A JPEG, or a PNG with
+// nothing transparent, gets the whole image.
+const findOpaqueBox = (url, width, height) =>
+  new Promise((resolve) => {
+    const whole = { x: 0, y: 0, width, height }
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, 1024 / Math.max(width, height))
+        const w = Math.max(1, Math.round(width * scale))
+        const h = Math.max(1, Math.round(height * scale))
+        const canvas = document.createElement('canvas')
+        canvas.width = w
+        canvas.height = h
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(img, 0, 0, w, h)
+        const { data } = ctx.getImageData(0, 0, w, h)
+        let minX = w
+        let minY = h
+        let maxX = -1
+        let maxY = -1
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            if (data[(y * w + x) * 4 + 3] > 8) {
+              if (x < minX) minX = x
+              if (x > maxX) maxX = x
+              if (y < minY) minY = y
+              if (y > maxY) maxY = y
+            }
+          }
+        }
+        if (maxX < 0) return resolve(whole)
+        const x = Math.max(0, Math.floor(minX / scale) - 1)
+        const y = Math.max(0, Math.floor(minY / scale) - 1)
+        resolve({
+          x,
+          y,
+          width: Math.min(width, Math.ceil((maxX + 1) / scale) + 1) - x,
+          height: Math.min(height, Math.ceil((maxY + 1) / scale) + 1) - y,
+        })
+      } catch {
+        resolve(whole)
+      }
+    }
+    img.onerror = () => resolve(whole)
+    img.src = url
+  })
+
+// A logo's frame opens on its visible edges, which may be a long way into a
+// padded canvas, so its zoom range has to reach there and back out again.
+// Zoom 1 is the whole image; below that is transparent space around it.
+const LOGO_MIN_ZOOM = 0.5
+const zoomBounds = (type, value) => {
+  if (ASSET_SPECS[type].aspect || !value?.box) return { min: 1, max: 4 }
+  const startZoom = Math.min(value.width / value.box.width, value.height / value.box.height)
+  return { min: LOGO_MIN_ZOOM, max: Math.max(4, startZoom * 2) }
+}
 
 // Logos and icons are drawn over other artwork, so their previews sit on a
 // checkerboard that makes transparency visible.
@@ -96,10 +169,10 @@ const sizeNote = (type, width, height) => {
   if (width > spec.width || height > spec.height) {
     return {
       severity: 'info',
-      text: `${dims} will be scaled to fit within ${spec.width} × ${spec.height}. Zoom in to trim the edges.`,
+      text: `${dims} will be scaled to fit within ${spec.width} × ${spec.height}. Zoom out to add space around the logo, in to trim it.`,
     }
   }
-  return { severity: 'info', text: `${dims}. Zoom in to trim the edges.` }
+  return { severity: 'info', text: `${dims}. Zoom out to add space around the logo, in to trim it.` }
 }
 
 const NoteIcon = ({ severity }) => {
@@ -159,9 +232,10 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
     const nextUrl = URL.createObjectURL(file)
     try {
       const { width, height } = await readImageSize(nextUrl)
+      const box = spec.aspect ? null : await findOpaqueBox(nextUrl, width, height)
       setCrop({ x: 0, y: 0 })
       setZoom(1)
-      onChange({ file, url: nextUrl, width, height, area: null })
+      onChange({ file, url: nextUrl, width, height, box, area: null })
     } catch (err) {
       URL.revokeObjectURL(nextUrl)
       setError(err.message)
@@ -178,8 +252,9 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
   }
 
   const note = value ? sizeNote(type, value.width, value.height) : null
-  const frameHeight = FRAME_HEIGHT[type]
   const transparent = type === 'logo' || type === 'icon'
+  const bounds = zoomBounds(type, value)
+  const frameBox = value?.box || value
 
   return (
     <Box>
@@ -219,8 +294,7 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
           <Box
             sx={{
               position: 'relative',
-              width: '100%',
-              height: frameHeight,
+              ...frameSx(type, value),
               borderRadius: '8px',
               overflow: 'hidden',
               border: '1px solid #FFFFFF26',
@@ -228,16 +302,21 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
             }}
           >
             <Cropper
+              key={value.url}
               image={value.url}
               crop={crop}
               zoom={zoom}
               // A fixed-shape slot starts with the image covering the frame,
-              // centred, which is the "just centre it" default. A logo keeps its
-              // own shape, so it starts fully in frame and is only ever trimmed.
-              aspect={spec.aspect || value.width / value.height}
+              // centred, which is the "just centre it" default, and the image
+              // can't leave the frame. A logo's frame takes the shape of its
+              // visible part and opens on it; it may then be zoomed out past
+              // the image's own edges, which pads the logo with transparency.
+              aspect={spec.aspect || frameBox.width / frameBox.height}
               objectFit={spec.aspect ? 'cover' : 'contain'}
-              minZoom={1}
-              maxZoom={4}
+              initialCroppedAreaPixels={spec.aspect ? undefined : value.box}
+              restrictPosition={Boolean(spec.aspect)}
+              minZoom={bounds.min}
+              maxZoom={bounds.max}
               // The wheel scrolls the dialog, not the image: a form this long is
               // scrolled through, and zoom has the slider (and pinch on touch).
               zoomWithScroll={false}
@@ -253,8 +332,8 @@ const AssetCropField = ({ type, value, onChange, currentUrl, disabled = false })
               <Typography sx={{ fontSize: 12, color: '#FFFFFF80' }}>Zoom</Typography>
               <Slider
                 size="small"
-                min={1}
-                max={4}
+                min={bounds.min}
+                max={bounds.max}
                 step={0.01}
                 value={zoom}
                 onChange={(_, v) => setZoom(v)}
