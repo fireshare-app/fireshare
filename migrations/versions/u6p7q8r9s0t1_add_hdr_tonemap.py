@@ -1,7 +1,7 @@
 """add hdr tone map columns to video_info
 
-Revision ID: t5o6p7q8r9s0
-Revises: s4n5o6p7q8r9
+Revision ID: u6p7q8r9s0t1
+Revises: t5o6p7q8r9s0
 Create Date: 2026-10-10 12:00:00.000000
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 't5o6p7q8r9s0'
-down_revision = 's4n5o6p7q8r9'
+revision = 'u6p7q8r9s0t1'
+down_revision = 't5o6p7q8r9s0'
 branch_labels = None
 depends_on = None
 
