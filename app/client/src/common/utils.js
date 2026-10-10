@@ -131,15 +131,20 @@ export const getPosterUrl = (videoId, cacheBuster) => {
 }
 
 /**
- * A version for the URLs of a video's crop and the transcodes made from it. They are
- * rebuilt under the same names whenever the video is re-cropped, so without one the
- * browser plays the previous crop from its cache. Empty when the video is not cropped:
- * its transcodes are then made from the original, which never changes.
- * @param {Object} videoInfo - Video info object containing has_crop, start_time, end_time
+ * A version for the URLs of a video's crop, its SDR copy and the transcodes made from
+ * them. They are rebuilt under the same names whenever the video is re-cropped or tone
+ * mapped again, so without one the browser plays the previous files from its cache.
+ * Empty when the video is neither cropped nor tone mapped: its transcodes are then made
+ * from the original, which never changes.
+ * @param {Object} videoInfo - Video info object containing has_crop, start_time, end_time, has_sdr, tonemap
  * @returns {string} Version to pass to getVideoUrl
  */
-export const getMediaVersion = (videoInfo) =>
-  videoInfo?.has_crop ? `${videoInfo.start_time ?? 0}-${videoInfo.end_time ?? 'end'}` : ''
+export const getMediaVersion = (videoInfo) => {
+  const parts = []
+  if (videoInfo?.has_crop) parts.push(`${videoInfo.start_time ?? 0}-${videoInfo.end_time ?? 'end'}`)
+  if (videoInfo?.has_sdr) parts.push(`sdr-${videoInfo.tonemap}`)
+  return parts.join('_')
+}
 
 const withVersion = (url, version) =>
   version ? `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(version)}` : url
@@ -260,18 +265,35 @@ const describeMedia = (contentType, width, height, framerate, bitrate) => {
  * original, and an .mkv's source is Fireshare's own H.264 conversion rather than the
  * file the stored codec describes.
  */
-const getSourceMedia = (videoInfo, extension, { hasCrop, forceOriginal }) => {
+const getSourceMedia = (videoInfo, extension, { hasCrop, forceOriginal, hdrFormat }) => {
   if (forceOriginal || extension === '.mkv' || !videoInfo?.codec) return null
   // A crop is a stream copy into MP4, so it keeps the original's codec.
   const container = extension === '.webm' && !hasCrop ? 'video/webm' : 'video/mp4'
-  return describeMedia(
+  const media = describeMedia(
     `${container}; codecs="${videoInfo.codec}"`,
     videoInfo.width,
     videoInfo.height,
     videoInfo.framerate,
     videoInfo.bitrate,
   )
+  if (media && hdrFormat) {
+    // So the browser answers for HDR playback specifically: a device that decodes the
+    // codec but cannot present PQ/HLG on this display reports it as unsupported.
+    media.colorGamut = 'rec2020'
+    media.transferFunction = hdrFormat === 'hlg' ? 'hlg' : 'pq'
+    if (hdrFormat !== 'hlg') media.hdrMetadataType = 'smpteSt2086'
+  }
+  return media
 }
+
+/**
+ * Whether this display can show HDR video, as the browser reports it. False where the
+ * media queries are unknown, so an old browser is treated as SDR.
+ */
+export const displaySupportsHdr = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  (window.matchMedia('(video-dynamic-range: high)').matches || window.matchMedia('(dynamic-range: high)').matches)
 
 // Transcodes are scaled to the target height with the source's aspect ratio and frame
 // rate, as ffmpeg's scale=-2:<height> does.
@@ -300,28 +322,60 @@ export const getVideoSources = (videoId, videoInfo, extension, { forceOriginal =
   const has720p = videoInfo?.has_720p
   const has1080p = videoInfo?.has_1080p
   const hasCrop = videoInfo?.has_crop
+  const hasSdr = videoInfo?.has_sdr
   const version = getMediaVersion(videoInfo)
 
-  // forceOriginal bypasses the crop — used by the editor so admins see the full uncut video
-  const sourceUrl =
+  const derivedUrl = (name, quality) =>
+    withVersion(
+      SERVED_BY === 'nginx'
+        ? `${URL}/_content/derived/${videoId}/${videoId}-${name}.mp4`
+        : `${URL}/api/video?id=${videoId}&quality=${quality}`,
+      version,
+    )
+
+  // forceOriginal bypasses the crop and the SDR copy — used by the editor so admins see
+  // the full uncut video. Otherwise the crop stands in for the original.
+  const originalUrl =
     forceOriginal && SERVED_BY === 'nginx'
       ? `${URL}/_content/video-raw/${videoId}${extension}`
       : hasCrop
-        ? withVersion(
-            SERVED_BY === 'nginx'
-              ? `${URL}/_content/derived/${videoId}/${videoId}-cropped.mp4`
-              : `${URL}/api/video?id=${videoId}&quality=cropped`,
-            version,
-          )
+        ? derivedUrl('cropped', 'cropped')
         : getVideoUrl(videoId, 'original', extension, version)
 
-  sources.push({
-    src: sourceUrl,
-    type: 'video/mp4',
-    label: 'Source',
-    selected: true,
-    media: getSourceMedia(videoInfo, extension, { hasCrop, forceOriginal }),
-  })
+  if (hasSdr && !forceOriginal) {
+    // A tone-mapped video has two sources: the SDR copy, and the HDR original (or its
+    // crop) for displays that can show it. The player starts on the first source the
+    // browser can decode smoothly, so the one this display should get is listed first.
+    // On an SDR display the original carries no media description, so it is never
+    // picked automatically and stays a manual choice in the quality menu.
+    const hdrDisplay = displaySupportsHdr()
+    const sdrSource = {
+      src: derivedUrl('sdr', 'sdr'),
+      type: 'video/mp4',
+      label: 'Source',
+      selected: !hdrDisplay,
+      // The SDR copy is encoded like a transcode, at the source's size.
+      media: getTranscodeMedia(videoInfo, videoInfo.height),
+    }
+    const hdrSource = {
+      src: originalUrl,
+      type: 'video/mp4',
+      label: 'Source (HDR)',
+      selected: hdrDisplay,
+      media: hdrDisplay
+        ? getSourceMedia(videoInfo, extension, { hasCrop, forceOriginal, hdrFormat: videoInfo.hdr_format })
+        : null,
+    }
+    sources.push(...(hdrDisplay ? [hdrSource, sdrSource] : [sdrSource, hdrSource]))
+  } else {
+    sources.push({
+      src: originalUrl,
+      type: 'video/mp4',
+      label: 'Source',
+      selected: true,
+      media: getSourceMedia(videoInfo, extension, { hasCrop, forceOriginal }),
+    })
+  }
 
   if (has1080p) {
     sources.push({

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import posixpath
+import random
 import re
 import secrets
 import shutil
@@ -51,11 +52,19 @@ def _delete_if_exists(path):
         path.unlink()
 
 
-def _reset_derived_videos(video_id, video_info, derived_dir):
-    """Delete the crop and the transcodes, and mark them all missing."""
-    for suffix in ('cropped', '480p', '720p', '1080p'):
+def _reset_derived_videos(video_id, video_info, derived_dir, keep_crop=False):
+    """Delete the crop, the SDR copy and the transcodes, and mark them all missing.
+
+    keep_crop leaves the crop and its previews alone: a tone map change does not move
+    the cut, so the crop stays the source and keeps playing while the rest is remade.
+    """
+    for suffix in ('sdr', '480p', '720p', '1080p') if keep_crop else ('cropped', 'sdr', '480p', '720p', '1080p'):
         _delete_if_exists(derived_dir / f"{video_id}-{suffix}.mp4")
-    video_info.has_crop = False
+    if not keep_crop:
+        # The compare previews are cut from the crop, so a new crop moves their timestamps.
+        shutil.rmtree(derived_dir / "tonemap-preview", ignore_errors=True)
+        video_info.has_crop = False
+    video_info.has_sdr = False
     video_info.has_480p = False
     video_info.has_720p = False
     video_info.has_1080p = False
@@ -104,7 +113,7 @@ def _clear_crop(video, video_info, paths, had_480p, had_720p, had_1080p):
     # The thread also regenerates the thumbnail from the original, and runs even with no
     # transcodes to make, so it removes a crop that was still being made.
     heights = _wanted_heights(video_info, paths, had_480p, had_720p, had_1080p)
-    _rebuild_derived_async(video, paths, heights, thumbnail_skip=_thumbnail_skip())
+    _rebuild_derived_async(video, paths, heights, thumbnail_skip=_thumbnail_skip(), tonemap=video_info.tonemap_operator)
 
 
 def _apply_crop_async(video, video_info, start_time, end_time, paths):
@@ -117,14 +126,27 @@ def _apply_crop_async(video, video_info, start_time, end_time, paths):
     # Remove old files and mark flags as pending
     _reset_derived_videos(video.video_id, video_info, derived_dir)
 
-    _rebuild_derived_async(video, paths, heights, start_time, end_time, _thumbnail_skip())
+    _rebuild_derived_async(video, paths, heights, start_time, end_time, _thumbnail_skip(), tonemap=video_info.tonemap_operator)
 
 
-def _rebuild_derived_async(video, paths, heights, start_time=None, end_time=None, thumbnail_skip=0):
+def _rebuild_for_tonemap(video, video_info, paths):
+    """Make (or remove) the SDR copy and remake the transcodes from it, keeping the crop."""
+    heights = _wanted_heights(video_info, paths, video_info.has_480p, video_info.has_720p, video_info.has_1080p)
+
+    derived_dir = paths["processed"] / "derived" / video.video_id
+    derived_dir.mkdir(parents=True, exist_ok=True)
+
+    _reset_derived_videos(video.video_id, video_info, derived_dir, keep_crop=True)
+
+    _rebuild_derived_async(video, paths, heights, video_info.start_time, video_info.end_time, _thumbnail_skip(),
+                           tonemap=video_info.tonemap_operator, keep_crop=True)
+
+
+def _rebuild_derived_async(video, paths, heights, start_time=None, end_time=None, thumbnail_skip=0, tonemap=None, keep_crop=False):
     """
-    Make the crop (when start_time or end_time is set), the thumbnail, and then the
-    transcodes in heights, from the crop or from the original when there is none, in a
-    background thread.
+    Make the crop (when start_time or end_time is set), the SDR copy (when tonemap is
+    set), the thumbnail, and then the transcodes in heights, each from the previous step's
+    output or from the original when there is none, in a background thread.
 
     The thread holds the video's lock throughout, so the scheduled scan's transcoder
     skips the video instead of writing the same files from the uncropped original, and
@@ -136,6 +158,7 @@ def _rebuild_derived_async(video, paths, heights, start_time=None, end_time=None
     derived_dir = paths["processed"] / "derived" / video_id
     original_path = paths["processed"] / "video_links" / f"{video_id}{video.extension}"
     cropped_path = derived_dir / f"{video_id}-cropped.mp4"
+    sdr_path = derived_dir / f"{video_id}-sdr.mp4"
     app = current_app._get_current_object()
     # The encoder the scheduled scan uses. These were left at their defaults, so a crop's
     # transcodes always ran on the CPU, even on a server set up for NVENC.
@@ -143,9 +166,9 @@ def _rebuild_derived_async(video, paths, heights, start_time=None, end_time=None
     encoder_preference = _transcoding_settings(paths).get('encoder_preference', 'auto')
 
     def current_info():
-        """The video's info, or None once a newer save has replaced this crop."""
+        """The video's info, or None once a newer save has replaced this crop or tone map."""
         vi = VideoInfo.query.filter_by(video_id=video_id).first()
-        return vi if vi and (vi.start_time, vi.end_time) == (start_time, end_time) else None
+        return vi if vi and (vi.start_time, vi.end_time, vi.tonemap_operator) == (start_time, end_time, tonemap) else None
 
     def still_current():
         with app.app_context():
@@ -159,21 +182,46 @@ def _rebuild_derived_async(video, paths, heights, start_time=None, end_time=None
                     return
                 # Cleared again now that the lock is held: a transcode that was part-way
                 # through this video when the save came in has since written its output.
-                _reset_derived_videos(video_id, vi, derived_dir)
+                _reset_derived_videos(video_id, vi, derived_dir, keep_crop=keep_crop)
                 duration = vi.duration or 0
+                assume_pq = util.stream_needs_pq_assumed(vi.vcodec) if vi.is_hdr else False
 
             source_path, source_duration = original_path, duration
             if start_time is not None or end_time is not None:
-                if not util.create_video_crop(original_path, cropped_path, start_time, end_time):
-                    logger.error(f"Crop failed for video {video_id}")
+                # A tone map change keeps the crop it already has; only a crop change
+                # (or a missing file) cuts a new one.
+                if not (keep_crop and cropped_path.exists()):
+                    if not util.create_video_crop(original_path, cropped_path, start_time, end_time):
+                        logger.error(f"Crop failed for video {video_id}")
+                        return
+                    with app.app_context():
+                        vi = current_info()
+                        if not vi:
+                            return
+                        vi.has_crop = True
+                        db.session.commit()
+                source_path, source_duration = cropped_path, (end_time or duration) - (start_time or 0)
+
+            if tonemap:
+                if not still_current():
                     return
+                success, failure_reason = util.create_sdr_video(
+                    source_path, sdr_path, tonemap, use_gpu, encoder_preference, assume_pq=assume_pq
+                )
                 with app.app_context():
                     vi = current_info()
                     if not vi:
                         return
-                    vi.has_crop = True
+                    if success:
+                        vi.has_sdr = True
+                        vi.sdr_error = None
+                        source_path = sdr_path
+                    else:
+                        # The transcodes are still made, from the HDR source, so the video
+                        # keeps playing; the editor sees why there is no SDR copy.
+                        vi.sdr_error = util.sdr_failure_message(failure_reason)
+                        logger.error(f"SDR copy of {video_id} failed: {vi.sdr_error}")
                     db.session.commit()
-                source_path, source_duration = cropped_path, (end_time or duration) - (start_time or 0)
 
             # Regenerate thumbnail from whichever file now plays
             if not still_current():
@@ -627,6 +675,15 @@ def handle_video_details(id):
             new_start = data.pop('start_time', _UNSET)
             new_end   = data.pop('end_time',   _UNSET)
 
+            # The tone map operator, or None to remove the SDR copy. Applied below,
+            # through the same rebuild as a crop.
+            new_tonemap = data.pop('tonemap', _UNSET)
+            if new_tonemap is not _UNSET and new_tonemap is not None:
+                if new_tonemap not in util.TONEMAP_OPERATORS:
+                    return jsonify({'message': f'Unknown tone map operator: {new_tonemap}'}), 400
+                if not video_info.is_hdr:
+                    return jsonify({'message': 'Only HDR videos can be tone mapped'}), 400
+
             # Only these are the client's to set. The previous blanket update of
             # whatever remained in the body also reached video_id (which carries no
             # uniqueness constraint, so a row could be repointed at someone else's
@@ -673,6 +730,18 @@ def handle_video_details(id):
 
             db.session.commit()
 
+            # A tone map change is persisted first, so a crop saved in the same request
+            # rebuilds with it. Re-applying the operator the video already plays with
+            # does nothing; re-applying one whose copy failed or is missing retries it.
+            tonemap_changed = False
+            if new_tonemap is not _UNSET:
+                tonemap_changed = new_tonemap != video_info.tonemap_operator or (new_tonemap is not None and not video_info.has_sdr)
+                # Removal is recorded as an explicit choice, so the automatic scan does
+                # not put the default back.
+                video_info.tonemap = new_tonemap or util.TONEMAP_OFF
+                video_info.sdr_error = None
+                db.session.commit()
+
             # Handle crop pipeline if start_time / end_time were included in the payload
             crop_changed = new_start is not _UNSET or new_end is not _UNSET
             if crop_changed:
@@ -696,6 +765,10 @@ def handle_video_details(id):
                 else:
                     # Creating / replacing the crop
                     _apply_crop_async(video, video_info, resolved_start, resolved_end, paths)
+            elif tonemap_changed:
+                paths = current_app.config['PATHS']
+                video = Video.query.filter_by(video_id=id).first()
+                _rebuild_for_tonemap(video, video_info, paths)
 
             if generated_password is not None:
                 return jsonify({"generated_password": generated_password}), 201
@@ -1045,3 +1118,111 @@ def clear_all_corrupt_status():
 
     count = clear_all_corrupt_videos()
     return jsonify({'cleared': count})
+
+
+# ---------------------------------------------------------------------------
+# HDR tone mapping: what the server can do, and the compare previews
+# ---------------------------------------------------------------------------
+
+_PREVIEW_WIDTH = 1280
+_PREVIEW_ZOOM = (900, 540)
+
+# One render per (video, time, operator) at a time: the compare modal asks for every
+# tile of a frame at once, and a second open must wait for the first rather than render
+# the same frame again.
+_preview_locks = {}
+_preview_locks_guard = threading.Lock()
+
+
+def _preview_lock(key):
+    with _preview_locks_guard:
+        lock = _preview_locks.get(key)
+        if lock is None:
+            lock = _preview_locks[key] = threading.Lock()
+        return lock
+
+
+def _editable_video(video_id):
+    """The video and its info when the current user may edit it, else an error response."""
+    video = Video.query.filter_by(video_id=video_id).first()
+    if not video or not video.info:
+        return None, None, (jsonify({'message': 'Video not found'}), 404)
+    if not current_user.can_modify(video, 'edit'):
+        return None, None, Response(status=403, response='You can only edit your own uploads.')
+    return video, video.info, None
+
+
+@api.route('/api/video/tonemap/capabilities', methods=['GET'])
+@login_required
+def tonemap_capabilities():
+    """Which tone map operators this server's ffmpeg can run, and what `auto` picks."""
+    return jsonify(util.tonemap_capabilities())
+
+
+@api.route('/api/video/<video_id>/tonemap/frames', methods=['GET'])
+@require_perm(P.EDIT_OWN, P.EDIT_ANY)
+def tonemap_frames(video_id):
+    """Random timestamps to compare operators on, spread over the video and clear of
+    its first and last few seconds, where captures tend to be menus or fades."""
+    video, video_info, error = _editable_video(video_id)
+    if error:
+        return error
+    try:
+        count = max(1, min(int(request.args.get('count', 3)), 6))
+    except ValueError:
+        return jsonify({'message': 'count must be a number'}), 400
+    duration = video_info._cropped_duration() or 0
+    if duration <= 0:
+        return jsonify({'message': 'The video has no known duration'}), 400
+    low, high = duration * 0.05, duration * 0.95
+    step = (high - low) / count
+    frames = sorted(round(low + step * i + random.random() * step, 1) for i in range(count))
+    return jsonify({'frames': frames, 'duration': duration})
+
+
+@api.route('/api/video/<video_id>/tonemap/preview', methods=['GET'])
+@require_perm(P.EDIT_OWN, P.EDIT_ANY)
+def tonemap_preview(video_id):
+    """One frame of the video at ?t= seconds through ?op= (an operator, or `as_stored`),
+    as WebP: scaled to the compare tile, or a native-pixel centre crop with ?zoom=1.
+    Rendered on first request and kept under the video's derived directory."""
+    video, video_info, error = _editable_video(video_id)
+    if error:
+        return error
+    operator = request.args.get('op') or 'as_stored'
+    if operator != 'as_stored' and operator not in util.TONEMAP_OPERATORS:
+        return jsonify({'message': f'Unknown tone map operator: {operator}'}), 400
+    try:
+        seconds = float(request.args.get('t', ''))
+    except ValueError:
+        return jsonify({'message': 't must be a number of seconds'}), 400
+    duration = video_info._cropped_duration() or 0
+    if seconds < 0 or (duration and seconds > duration):
+        return jsonify({'message': 't is outside the video'}), 400
+
+    paths = current_app.config['PATHS']
+    derived_dir = paths["processed"] / "derived" / video_id
+    cropped_path = derived_dir / f"{video_id}-cropped.mp4"
+    source_path = cropped_path if video_info.has_crop and cropped_path.exists() else \
+        paths["processed"] / "video_links" / f"{video_id}{video.extension}"
+    if not source_path.exists():
+        return jsonify({'message': 'The video file is missing'}), 404
+
+    assume_pq = util.stream_needs_pq_assumed(video_info.vcodec)
+    key = (video_id, round(seconds, 1), operator)
+    with _preview_lock(key):
+        rendered = util.render_tonemap_preview(
+            source_path, seconds, None if operator == 'as_stored' else operator,
+            derived_dir / "tonemap-preview", width=_PREVIEW_WIDTH, zoom=_PREVIEW_ZOOM, assume_pq=assume_pq,
+        )
+    with _preview_locks_guard:
+        # Rendered once, the file serves every later request, so the lock can go.
+        lock = _preview_locks.get(key)
+        if lock is not None and not lock.locked():
+            _preview_locks.pop(key, None)
+    if not rendered:
+        return jsonify({'message': f'ffmpeg could not render the {operator} preview; see the server log'}), 500
+    tile, zoom = rendered
+    response = send_file(zoom if request.args.get('zoom') == '1' else tile, mimetype='image/webp')
+    response.headers['Cache-Control'] = 'private, max-age=3600'
+    return response

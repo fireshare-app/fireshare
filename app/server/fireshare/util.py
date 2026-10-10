@@ -7,6 +7,7 @@ import json
 import subprocess as sp
 import xxhash
 from fireshare import logger
+from fireshare.constants import TONEMAP_OPERATORS, TONEMAP_OFF  # noqa: F401 (re-exported)
 import time
 import glob
 import shutil
@@ -753,6 +754,236 @@ def check_nvenc_available(encoder=None):
 
 
 
+# ---------------------------------------------------------------------------
+# HDR detection and HDR -> SDR tone mapping
+# ---------------------------------------------------------------------------
+
+# ffprobe's names for the HDR transfer functions: PQ (HDR10) and HLG.
+HDR_TRANSFERS = ('smpte2084', 'arib-std-b67')
+
+# Vulkan devices that are really the CPU. libplacebo runs on them, but many times slower
+# than the zscale chain, so they do not make bt2390 the automatic default.
+_SOFTWARE_VULKAN_DEVICES = ('llvmpipe', 'lavapipe', 'swiftshader')
+
+
+def _stream_bit_depth(stream):
+    match = re.search(r'p(\d+)(le|be)?$', stream.get('pix_fmt') or '')
+    return int(match.group(1)) if match else 8
+
+
+def is_hdr_stream(stream):
+    """Whether an ffprobe video stream is HDR, from its colour tags.
+
+    PQ and HLG are HDR by definition. A 10-bit BT.2020 stream with no transfer tag at
+    all is, in practice, an HDR capture that lost its metadata; it is flagged too, and
+    the tone map then assumes PQ (see `stream_needs_pq_assumed`).
+    """
+    if not stream:
+        return False
+    transfer = (stream.get('color_transfer') or '').lower()
+    if transfer in HDR_TRANSFERS:
+        return True
+    if transfer and transfer != 'unknown':
+        return False
+    primaries = (stream.get('color_primaries') or '').lower()
+    return primaries == 'bt2020' and _stream_bit_depth(stream) >= 10
+
+
+def stream_needs_pq_assumed(stream):
+    """An HDR stream with no transfer tag, which the tone map has to treat as PQ."""
+    transfer = (stream.get('color_transfer') or '').lower() if stream else ''
+    return is_hdr_stream(stream) and transfer not in HDR_TRANSFERS
+
+
+def tonemap_filter(operator, assume_pq=False):
+    """The ffmpeg input arguments and video filter that turn HDR frames into BT.709 SDR.
+
+    Both chains end in 8-bit 4:2:0 limited range tagged BT.709, which every encoder the
+    transcodes use accepts. Returns (input_args, filter).
+    """
+    if operator not in TONEMAP_OPERATORS:
+        raise ValueError(f"Unknown tone map operator: {operator}")
+    # A stream with no transfer tag is treated as HDR10. The tags are set on the decoded
+    # frames so the conversion reads them; the file is not touched.
+    prefix = 'setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,' if assume_pq else ''
+    if operator == 'bt2390':
+        vf = (f"{prefix}format=yuv420p10le,hwupload,"
+              "libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p,"
+              "hwdownload,format=yuv420p")
+        return ['-init_hw_device', 'vulkan=vk', '-filter_hw_device', 'vk'], vf
+    # PQ/HLG to linear light with 100 nits at 1.0, float RGB in BT.709 primaries, the
+    # curve, then back to BT.709 gamma. desat=0 keeps bright colours from greying out.
+    vf = (f"{prefix}zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+          f"tonemap=tonemap={operator}:desat=0,"
+          "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+    return [], vf
+
+
+_ffmpeg_filters_cache = None
+_vulkan_device_cache = ('unchecked', None)
+
+
+def ffmpeg_filters():
+    """The names of the filters this ffmpeg build has. Cached for the process."""
+    global _ffmpeg_filters_cache
+    if _ffmpeg_filters_cache is None:
+        names = set()
+        try:
+            result = sp.run(['ffmpeg', '-hide_banner', '-filters'], capture_output=True, text=True, timeout=30)
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                # " .S. tonemap  V->V  Conversion to/from different dynamic ranges."
+                if len(parts) >= 3 and '->' in parts[2]:
+                    names.add(parts[1])
+        except (OSError, sp.SubprocessError) as ex:
+            logger.warning(f"Could not list ffmpeg filters: {ex}")
+        _ffmpeg_filters_cache = names
+    return _ffmpeg_filters_cache
+
+
+def vulkan_device():
+    """'hardware', 'software' or None: what libplacebo would run on here. Cached."""
+    global _vulkan_device_cache
+    if _vulkan_device_cache[0] == 'unchecked':
+        device = None
+        cmd = ['ffmpeg', '-hide_banner', '-v', 'verbose', '-init_hw_device', 'vulkan=vk', '-filter_hw_device', 'vk',
+               '-f', 'lavfi', '-i', 'color=black:s=64x64:d=1:r=1',
+               '-vf', 'format=yuv420p,hwupload,hwdownload,format=yuv420p', '-frames:v', '1', '-f', 'null', '-']
+        try:
+            result = sp.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode == 0:
+                match = re.search(r'Using device:\s*(.+)', result.stderr)
+                name = match.group(1).strip().lower() if match else ''
+                # Unknown names are treated as software: the only cost is that bt2390
+                # is not picked automatically.
+                device = 'hardware' if name and not any(m in name for m in _SOFTWARE_VULKAN_DEVICES) else 'software'
+                logger.debug(f"Vulkan device: {name or 'unnamed'} ({device})")
+            else:
+                logger.debug(f"No usable Vulkan device: {result.stderr.strip()[-300:]}")
+        except (OSError, sp.SubprocessError) as ex:
+            logger.debug(f"Vulkan probe failed: {ex}")
+        _vulkan_device_cache = ('checked', device)
+    return _vulkan_device_cache[1]
+
+
+def tonemap_capabilities():
+    """Which operators this ffmpeg build can run, and what `auto` resolves to."""
+    filters = ffmpeg_filters()
+    cpu_ok = 'zscale' in filters and 'tonemap' in filters
+    has_placebo = 'libplacebo' in filters
+    vulkan = vulkan_device() if has_placebo else None
+    operators = []
+    for op in TONEMAP_OPERATORS:
+        if op == 'bt2390':
+            if not has_placebo:
+                available, note = False, 'ffmpeg was built without libplacebo'
+            elif vulkan is None:
+                available, note = False, 'no Vulkan device: install a Vulkan driver (mesa-vulkan-drivers) or expose the GPU'
+            elif vulkan == 'hardware':
+                available, note = True, 'runs on the GPU'
+            else:
+                available, note = True, 'runs on the CPU through software Vulkan, several times slower than hable'
+        else:
+            available, note = cpu_ok, None if cpu_ok else 'ffmpeg was built without libzimg (zscale)'
+        operators.append({'id': op, 'available': available, 'note': note})
+    caps = {'operators': operators, 'vulkan': vulkan}
+    caps['auto_default'] = resolve_tonemap_default('auto', caps)
+    return caps
+
+
+def resolve_tonemap_default(configured, caps=None):
+    """The operator `auto` (or an unavailable explicit choice) falls back to.
+
+    bt2390 when it runs on a real GPU, otherwise hable, which is the best of the CPU
+    curves and runs everywhere libzimg does. None when the build cannot tone map.
+    """
+    caps = caps or tonemap_capabilities()
+    available = [o['id'] for o in caps['operators'] if o['available']]
+    if configured and configured != 'auto' and configured in available:
+        return configured
+    if 'bt2390' in available and caps.get('vulkan') == 'hardware':
+        return 'bt2390'
+    for op in ('hable', 'bt2390', 'mobius', 'reinhard'):
+        if op in available:
+            return op
+    return None
+
+
+def sdr_failure_message(failure_reason):
+    """What the editor is shown when an SDR copy could not be made."""
+    if failure_reason == 'corruption':
+        return 'The video could not be read'
+    return 'No encoder could make the SDR copy; see the server log'
+
+
+# What the SDR copy is tagged as, so players read it as ordinary BT.709 video.
+_SDR_OUTPUT_ARGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709']
+
+
+def create_sdr_video(video_path, out_path, operator, use_gpu=False, encoder_preference='auto', data_path=None, assume_pq=False):
+    """Tone map an HDR video into an SDR copy at its own resolution.
+
+    Encodes with the same encoder chain as the transcodes, so the result plays wherever
+    they do. Returns (success, failure_reason) exactly like transcode_video_quality.
+    """
+    input_args, vf = tonemap_filter(operator, assume_pq)
+    # The encoders want even dimensions; a source with an odd edge loses one line.
+    vf += ',scale=trunc(iw/2)*2:trunc(ih/2)*2'
+    return transcode_video_quality(
+        video_path, out_path, None, use_gpu, None, encoder_preference, data_path=data_path,
+        video_filter=vf, input_args=input_args, output_args=_SDR_OUTPUT_ARGS, label=f'SDR ({operator})',
+    )
+
+
+def render_tonemap_preview(video_path, seconds, operator, out_dir, width=1280, zoom=(900, 540), assume_pq=False):
+    """One frame of video_path at `seconds`, tone mapped with `operator` (or left as
+    stored when operator is None), as two WebP files in out_dir: the frame scaled to
+    `width`, and a centre crop of `zoom` size at native pixels. Returns their paths, or
+    None when ffmpeg failed.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{seconds:.1f}-{operator or 'as_stored'}"
+    tile, crop = out_dir / f"{name}.webp", out_dir / f"{name}-zoom.webp"
+    if tile.exists() and crop.exists():
+        return tile, crop
+    if operator:
+        input_args, vf = tonemap_filter(operator, assume_pq)
+    else:
+        input_args, vf = [], 'format=yuv420p'
+    zw, zh = zoom
+    graph = (f"[0:v]{vf},split[a][b];[a]scale={width}:-2[tile];"
+             f"[b]crop=min(iw\\,{zw}):min(ih\\,{zh}):(iw-ow)/2:(ih-oh)/2[zoom]")
+    tile_tmp, crop_tmp = out_dir / f"{name}.tmp.webp", out_dir / f"{name}-zoom.tmp.webp"
+    cmd = ['ffmpeg', '-v', 'error', '-y', *input_args, '-ss', f'{seconds:.3f}', '-i', str(video_path),
+           '-filter_complex', graph,
+           '-map', '[tile]', '-frames:v', '1', '-c:v', 'libwebp', '-quality', '85', str(tile_tmp),
+           '-map', '[zoom]', '-frames:v', '1', '-c:v', 'libwebp', '-quality', '85', str(crop_tmp)]
+    logger.debug(f"$ {' '.join(cmd)}")
+    try:
+        result = sp.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, sp.SubprocessError) as ex:
+        logger.warning(f"Tone map preview failed for {video_path} at {seconds}s ({operator}): {ex}")
+        result = None
+    if result is None or result.returncode != 0 or not tile_tmp.exists() or not crop_tmp.exists():
+        if result is not None:
+            logger.warning(f"Tone map preview failed for {video_path} at {seconds}s ({operator}): {result.stderr.strip()[-400:]}")
+        tile_tmp.unlink(missing_ok=True)
+        crop_tmp.unlink(missing_ok=True)
+        return None
+    try:
+        os.replace(tile_tmp, tile)
+        os.replace(crop_tmp, crop)
+    except OSError as ex:
+        # A save that resets the derived files removes the preview directory; the
+        # request that lost the race simply fails and the modal retries.
+        logger.warning(f"Tone map preview for {video_path} at {seconds}s ({operator}) could not be kept: {ex}")
+        tile_tmp.unlink(missing_ok=True)
+        crop_tmp.unlink(missing_ok=True)
+        return None
+    return tile, crop
+
+
 def transcode_video(video_path, out_path):
     s = time.time()
     logger.debug(f"Transcoding video")
@@ -940,9 +1171,17 @@ TRANSCODE_BITRATE_CAPS = {
     480:  (('2500k', '5M'),  ('4M', '8M')),
 }
 
-def _build_transcode_command(video_path, out_path, height, encoder, input_decoder=None, framerate=None):
-    """Build an ffmpeg command for transcoding with the given encoder."""
+def _build_transcode_command(video_path, out_path, height, encoder, input_decoder=None, framerate=None,
+                             video_filter=None, input_args=None, output_args=None):
+    """Build an ffmpeg command for transcoding with the given encoder.
+
+    height is the target height to scale to, or None to keep the source size, in
+    which case video_filter (e.g. a tone map chain) does any conversion. input_args
+    go before -i (hardware device setup); output_args before the output path.
+    """
     cmd = ['ffmpeg', '-v', 'warning', '-stats', '-y']
+    if input_args:
+        cmd.extend(input_args)
     if input_decoder:
         cmd.extend(['-c:v', input_decoder])
     cmd.append('-i')
@@ -958,7 +1197,9 @@ def _build_transcode_command(video_path, out_path, height, encoder, input_decode
         maxrate, bufsize = TRANSCODE_BITRATE_CAPS[height][1 if high_fps else 0]
         cmd.extend(['-maxrate', maxrate, '-bufsize', bufsize])
     
-    cmd.extend(['-vf', f'scale=-2:{height}'])
+    cmd.extend(['-vf', video_filter or f'scale=-2:{height}'])
+    if output_args:
+        cmd.extend(output_args)
     cmd.extend(['-c:a', encoder['audio_codec'], '-b:a', encoder.get('audio_bitrate', '128k')])
     # The index goes at the front, so the player can start without first fetching the
     # end of the file, and again every time it switches quality.
@@ -967,7 +1208,8 @@ def _build_transcode_command(video_path, out_path, height, encoder, input_decode
     
     return cmd
 
-def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout_seconds=None, encoder_preference='auto', data_path=None):
+def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout_seconds=None, encoder_preference='auto', data_path=None,
+                            video_filter=None, input_args=None, output_args=None, label=None):
     """
     Transcode a video to a specific height (e.g., 720, 1080) while maintaining aspect ratio.
     
@@ -983,7 +1225,9 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
     Args:
         video_path: Path to the source video
         out_path: Path for the transcoded output
-        height: Target height in pixels (e.g., 720, 1080)
+        height: Target height in pixels (e.g., 720, 1080), or None to keep the source size
+        video_filter, input_args, output_args: see _build_transcode_command
+        label: what to call the output in logs when height is None
         use_gpu: Whether to use GPU acceleration (NVENC if available)
         timeout_seconds: Maximum time allowed for encoding (default: calculated based on video duration)
     
@@ -995,6 +1239,7 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
     """
     global _working_encoder_cache
     s = time.time()
+    target = f'{height}p' if height else (label or 'source resolution')
     
     # Validate the source video file before attempting transcoding
     # This catches corrupt files early instead of trying all encoders
@@ -1040,8 +1285,9 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
         logger.debug(f"Using cached {mode.upper()} encoder: {encoder['name']}")
 
         # Build ffmpeg command using the cached encoder
-        logger.info(f"Transcoding video to {height}p using {encoder['name']}")
-        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate)
+        logger.info(f"Transcoding video to {target} using {encoder['name']}")
+        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate,
+                                       video_filter=video_filter, input_args=input_args, output_args=output_args)
 
         logger.debug(f"$: {' '.join(cmd)}")
 
@@ -1050,7 +1296,7 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
             if result.returncode == 0:
                 tmp_path.rename(out_path)
                 e = time.time()
-                logger.info(f'Transcoded {str(out_path)} to {height}p in {e-s:.2f}s')
+                logger.info(f'Transcoded {str(out_path)} to {target} in {e-s:.2f}s')
                 return (True, None)
             else:
                 # Cached encoder failed - clear cache and fall through to try all encoders
@@ -1187,7 +1433,8 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
         logger.debug(f"Trying {encoder['name']}...")
 
         # Build ffmpeg command targeting the temp path
-        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate)
+        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate,
+                                       video_filter=video_filter, input_args=input_args, output_args=output_args)
 
         logger.debug(f"$: {' '.join(cmd)}")
 
@@ -1199,7 +1446,7 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
                 logger.info(f"✓ {encoder['name']} works! Using it for all transcodes this session.")
                 _working_encoder_cache[mode] = encoder
                 e = time.time()
-                logger.info(f'Transcoded {str(out_path)} to {height}p in {e-s:.2f}s')
+                logger.info(f'Transcoded {str(out_path)} to {target} in {e-s:.2f}s')
                 return (True, None)
             else:
                 logger.warning(f"✗ {encoder['name']} failed with exit code {result.returncode}")

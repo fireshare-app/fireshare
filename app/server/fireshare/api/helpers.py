@@ -220,6 +220,15 @@ def get_video_path(id, subid=None, quality=None):
         raise Exception(f"No video found for {id}")
     paths = current_app.config['PATHS']
 
+    # The tone-mapped SDR copy stands in for the source the way a crop does. When it
+    # is missing, the crop (if any) is the next best thing.
+    if quality == 'sdr':
+        sdr_path = paths["processed"] / "derived" / id / f"{id}-sdr.mp4"
+        if sdr_path.exists():
+            return str(sdr_path)
+        logger.warning(f"Requested SDR version for video {id} not found, falling back")
+        quality = 'cropped'
+
     # Handle cropped source quality
     if quality == 'cropped':
         cropped_path = paths["processed"] / "derived" / id / f"{id}-cropped.mp4"

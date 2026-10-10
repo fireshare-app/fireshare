@@ -40,8 +40,19 @@ DEFAULT_CONFIG = {
     "enable_480p": True,
     "enable_720p": True,
     "enable_1080p": True,
+    # HDR -> SDR tone mapping. "auto" is bt.2390 on a GPU and hable otherwise; the
+    # automatic conversion of every HDR video stays off until an admin turns it on.
+    "tonemap_default": "auto",
+    "auto_tonemap": False,
   }
 }
 
 SUPPORTED_FILE_TYPES = ['mp4', 'm4v', 'mov', 'webm']
 SUPPORTED_FILE_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.webm']
+
+# HDR -> SDR tone map operators, in the order the UI lists them. bt2390 runs through
+# libplacebo; the rest through the built-in tonemap filter (which needs zscale/libzimg).
+TONEMAP_OPERATORS = ('bt2390', 'hable', 'mobius', 'reinhard')
+# Stored in VideoInfo.tonemap when the tone map was removed on purpose, so the
+# automatic scan does not put the default back. NULL means nothing was ever chosen.
+TONEMAP_OFF = 'none'
