@@ -286,14 +286,52 @@ const getSourceMedia = (videoInfo, extension, { hasCrop, forceOriginal, hdrForma
   return media
 }
 
+// Firefox answers the HDR media queries like any other browser but does not render HDR
+// video to match: nothing on macOS and Linux, and on Windows only from Firefox 153 with
+// mixed results, so a PQ original plays flat and grey. It gets the SDR copy unless the
+// viewer picks the original by hand (see getHdrPreference).
+const isFirefox = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent)
+
 /**
- * Whether this display can show HDR video, as the browser reports it. False where the
- * media queries are unknown, so an old browser is treated as SDR.
+ * Whether this browser will show HDR video on this display. Chrome reports
+ * `dynamic-range: high` only while the display is in HDR mode, and Safari only on EDR
+ * displays, so the query is a fair signal for them. `video-dynamic-range` would be the
+ * precise one, but Chrome keeps it behind a flag and Safari lacks it, so it is only
+ * a bonus. False where the queries are unknown, so an old browser is treated as SDR.
  */
 export const displaySupportsHdr = () =>
+  !isFirefox &&
   typeof window !== 'undefined' &&
   typeof window.matchMedia === 'function' &&
   (window.matchMedia('(video-dynamic-range: high)').matches || window.matchMedia('(dynamic-range: high)').matches)
+
+// Which Source variant the viewer picked by hand on this device: 'hdr', 'sdr', or null
+// when they never have. The detection above is only a guess; a choice beats it.
+const HDR_PREFERENCE_KEY = 'fireshare_hdr_source'
+
+export const getHdrPreference = () => {
+  try {
+    const value = localStorage.getItem(HDR_PREFERENCE_KEY)
+    return value === 'hdr' || value === 'sdr' ? value : null
+  } catch {
+    return null
+  }
+}
+
+export const setHdrPreference = (value) => {
+  try {
+    if (value === 'hdr' || value === 'sdr') localStorage.setItem(HDR_PREFERENCE_KEY, value)
+    else localStorage.removeItem(HDR_PREFERENCE_KEY)
+  } catch {}
+}
+
+/**
+ * Remember a quality the viewer chose by hand, when it is one of the Source variants of
+ * a tone-mapped video. Transcodes say nothing about HDR and are not remembered.
+ */
+export const rememberSourceChoice = (source) => {
+  if (source?.variant === 'hdr' || source?.variant === 'sdr') setHdrPreference(source.variant)
+}
 
 // Transcodes are scaled to the target height with the source's aspect ratio and frame
 // rate, as ffmpeg's scale=-2:<height> does.
@@ -347,12 +385,15 @@ export const getVideoSources = (videoId, videoInfo, extension, { forceOriginal =
     // crop) for displays that can show it. The player starts on the first source the
     // browser can decode smoothly, so the one this display should get is listed first.
     // On an SDR display the original carries no media description, so it is never
-    // picked automatically and stays a manual choice in the quality menu.
-    const hdrDisplay = displaySupportsHdr()
+    // picked automatically and stays a manual choice in the quality menu. A variant the
+    // viewer picked by hand before, on this device, wins over the detection.
+    const preference = getHdrPreference()
+    const hdrDisplay = preference ? preference === 'hdr' : displaySupportsHdr()
     const sdrSource = {
       src: derivedUrl('sdr', 'sdr'),
       type: 'video/mp4',
       label: 'Source',
+      variant: 'sdr',
       selected: !hdrDisplay,
       // The SDR copy is encoded like a transcode, at the source's size.
       media: getTranscodeMedia(videoInfo, videoInfo.height),
@@ -361,6 +402,7 @@ export const getVideoSources = (videoId, videoInfo, extension, { forceOriginal =
       src: originalUrl,
       type: 'video/mp4',
       label: 'Source (HDR)',
+      variant: 'hdr',
       selected: hdrDisplay,
       media: hdrDisplay
         ? getSourceMedia(videoInfo, extension, { hasCrop, forceOriginal, hdrFormat: videoInfo.hdr_format })

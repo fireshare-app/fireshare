@@ -265,12 +265,12 @@ Open an HDR video, choose **Edit**, and use the **Dynamic Range** row: pick an o
 
 | Operator | Needs                                  | Notes                                                  |
 | -------- | -------------------------------------- | ------------------------------------------------------ |
-| bt.2390  | ffmpeg with libplacebo + a Vulkan device | Best looking. Lite image only; slow without a real GPU |
+| bt.2390  | ffmpeg with libplacebo + a Vulkan device | Best looking. On the GPU with the NVIDIA runtime, otherwise through Mesa's software Vulkan, which is slow |
 | hable    | ffmpeg with libzimg (zscale)           | Default on CPU, darker and more contrasty              |
 | mobius   | ffmpeg with libzimg (zscale)           | Lighter than hable                                     |
 | reinhard | ffmpeg with libzimg (zscale)           | Lightest                                               |
 
-`Auto` picks bt.2390 when libplacebo can run on a GPU and hable otherwise. Operators the server's ffmpeg cannot run are greyed out.
+`Auto` picks bt.2390 when libplacebo can run on a GPU and hable otherwise. Operators the server's ffmpeg cannot run are greyed out. Both images ship every operator; for bt.2390 to use the GPU the container needs `graphics` in `NVIDIA_DRIVER_CAPABILITIES`, which the full image sets by default.
 
 ### Docker Environment Variables
 

@@ -87,7 +87,7 @@ const TranscodingStatus = ({ open, authenticated }) => {
                   'Preparing transcode...'
                 ) : (
                   <>
-                    Transcoding:{' '}
+                    {status.resolution === 'SDR' ? 'Tone mapping:' : 'Transcoding:'}{' '}
                     <Box component="span" sx={styles.textAccent}>
                       {status.current + status.completed_tasks}/
                       {status.total + status.completed_tasks + status.queue_tasks}
@@ -118,7 +118,7 @@ const TranscodingStatus = ({ open, authenticated }) => {
                     </Typography>
                     {status.resolution && (
                       <Typography sx={{ ...styles.textSecondary, ...styles.textAccent, fontWeight: 600 }}>
-                        {status.resolution}
+                        {status.resolution === 'SDR' ? 'HDR → SDR' : status.resolution}
                       </Typography>
                     )}
                   </Box>
@@ -134,7 +134,7 @@ const TranscodingStatus = ({ open, authenticated }) => {
   const tooltipText =
     status.total === 0
       ? 'Preparing transcode...'
-      : `Transcoding: ${status.current + status.completed_tasks}/${status.total + status.completed_tasks + status.queue_tasks}${status.current_video ? `\n${status.current_video}` : ''}`
+      : `${status.resolution === 'SDR' ? 'Tone mapping' : 'Transcoding'}: ${status.current + status.completed_tasks}/${status.total + status.completed_tasks + status.queue_tasks}${status.current_video ? `\n${status.current_video}` : ''}`
 
   return (
     <Tooltip title={tooltipText} arrow placement="right">
