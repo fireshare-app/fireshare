@@ -1083,7 +1083,7 @@ def transcode_videos(regenerate, video, include_corrupt):
                     continue
                 derived_path = Path(processed_root, "derived", vi.video_id)
                 sdr_path = derived_path / f"{vi.video_id}-sdr.mp4"
-                if vi.tonemap:
+                if vi.tonemap_operator:
                     if sdr_path.exists():
                         if not vi.has_sdr:
                             vi.has_sdr = True
@@ -1092,7 +1092,9 @@ def transcode_videos(regenerate, video, include_corrupt):
                     if vi.sdr_error and not regenerate:
                         continue  # failed before; saving the video again retries it
                     sdr_items.append((vi, video_path, derived_path, sdr_path))
-                elif tonemap_default and not vi.has_sdr and not vi.sdr_error:
+                elif tonemap_default and vi.tonemap is None and not vi.has_sdr and not vi.sdr_error:
+                    # Never chosen for this video. A tone map removed on purpose is stored
+                    # as an explicit 'none' and is left alone.
                     vi.tonemap = tonemap_default
                     db.session.commit()
                     sdr_items.append((vi, video_path, derived_path, sdr_path))
@@ -1107,13 +1109,13 @@ def transcode_videos(regenerate, video, include_corrupt):
                         db.session.refresh(vi)
                     except InvalidRequestError:
                         continue
-                    if not vi.tonemap or sdr_path.exists():
+                    if not vi.tonemap_operator or sdr_path.exists():
                         continue
                     cropped_path = derived_path / f"{vi.video_id}-cropped.mp4"
                     source_path = cropped_path if vi.has_crop and cropped_path.exists() else video_path
-                    logger.info(f"[{idx}/{len(sdr_items)}] Tone mapping {vi.video_id} to SDR with {vi.tonemap} ({vi.video.path})")
+                    logger.info(f"[{idx}/{len(sdr_items)}] Tone mapping {vi.video_id} to SDR with {vi.tonemap_operator} ({vi.video.path})")
                     success, failure_reason = util.create_sdr_video(
-                        source_path, sdr_path, vi.tonemap, use_gpu, encoder_preference,
+                        source_path, sdr_path, vi.tonemap_operator, use_gpu, encoder_preference,
                         data_path=paths['data'], assume_pq=util.stream_needs_pq_assumed(vi.vcodec),
                     )
                     if success:

@@ -3,6 +3,7 @@ import uuid as uuid_lib
 from datetime import datetime
 from flask_login import UserMixin
 from . import db
+from .constants import TONEMAP_OPERATORS
 from . import permissions as perms
 from . import media_codecs
 
@@ -236,6 +237,12 @@ class VideoInfo(db.Model):
         return vcodec
 
     @property
+    def tonemap_operator(self):
+        """The operator the SDR copy is made with, or None. The column also records an
+        explicit 'none' when the tone map was removed, which only the scan cares about."""
+        return self.tonemap if self.tonemap in TONEMAP_OPERATORS else None
+
+    @property
     def hdr_format(self):
         """'pq' or 'hlg' for an HDR source (an untagged one is taken as PQ), else None."""
         if not self.is_hdr:
@@ -284,7 +291,7 @@ class VideoInfo(db.Model):
             "has_crop": self.has_crop or False,
             "is_hdr": bool(self.is_hdr),
             "hdr_format": self.hdr_format,
-            "tonemap": self.tonemap,
+            "tonemap": self.tonemap_operator,
             "has_sdr": self.has_sdr or False,
             "sdr_error": self.sdr_error,
             "has_password": bool(self.password_hash),

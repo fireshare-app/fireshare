@@ -500,10 +500,12 @@ const VideoModal = ({
     const info = vid?.info
     const converting = Boolean(info?.tonemap) && !info?.has_sdr && !info?.sdr_error
     setTonemapProcessing(converting)
-    if (converting && open) startTonemapPoll(vid.video_id)
+    // Viewers keep watching the original while the copy is built; only an editor
+    // (who sees the row's status) needs to hear when it is ready.
+    if (converting && open && authenticated) startTonemapPoll(vid.video_id)
     else clearInterval(tonemapPollRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, vid?.video_id, vid?.info?.tonemap, vid?.info?.has_sdr, vid?.info?.sdr_error])
+  }, [open, authenticated, vid?.video_id, vid?.info?.tonemap, vid?.info?.has_sdr, vid?.info?.sdr_error])
 
   useEffect(() => {
     if (!editMode || !authenticated || !vid?.info?.is_hdr || tonemapCaps) return
@@ -919,7 +921,7 @@ const VideoModal = ({
                     fluid={false}
                     playsinline={true}
                   />
-                  {(cropProcessing || tonemapProcessing) && (
+                  {cropProcessing && (
                     <Box
                       sx={{
                         position: 'absolute',
@@ -936,7 +938,7 @@ const VideoModal = ({
                       <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5 }}>
                         <CircularProgress size={48} sx={{ color: '#fff' }} />
                         <Typography variant="body2" sx={{ color: '#fff', fontWeight: 500, letterSpacing: '0.02em' }}>
-                          {cropProcessing ? 'Cropping video...' : 'Converting to SDR...'}
+                          Cropping video...
                         </Typography>
                       </Box>
                     </Box>

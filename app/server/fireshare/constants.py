@@ -49,3 +49,10 @@ DEFAULT_CONFIG = {
 
 SUPPORTED_FILE_TYPES = ['mp4', 'm4v', 'mov', 'webm']
 SUPPORTED_FILE_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.webm']
+
+# HDR -> SDR tone map operators, in the order the UI lists them. bt2390 runs through
+# libplacebo; the rest through the built-in tonemap filter (which needs zscale/libzimg).
+TONEMAP_OPERATORS = ('bt2390', 'hable', 'mobius', 'reinhard')
+# Stored in VideoInfo.tonemap when the tone map was removed on purpose, so the
+# automatic scan does not put the default back. NULL means nothing was ever chosen.
+TONEMAP_OFF = 'none'

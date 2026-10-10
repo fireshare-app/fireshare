@@ -7,6 +7,7 @@ import json
 import subprocess as sp
 import xxhash
 from fireshare import logger
+from fireshare.constants import TONEMAP_OPERATORS, TONEMAP_OFF  # noqa: F401 (re-exported)
 import time
 import glob
 import shutil
@@ -760,11 +761,6 @@ def check_nvenc_available(encoder=None):
 # ffprobe's names for the HDR transfer functions: PQ (HDR10) and HLG.
 HDR_TRANSFERS = ('smpte2084', 'arib-std-b67')
 
-# The operators a video can be tone mapped with, in the order the UI lists them. bt2390
-# runs through libplacebo; the rest through the built-in tonemap filter, which needs
-# zscale (libzimg) to get the frame into linear light first.
-TONEMAP_OPERATORS = ('bt2390', 'hable', 'mobius', 'reinhard')
-
 # Vulkan devices that are really the CPU. libplacebo runs on them, but many times slower
 # than the zscale chain, so they do not make bt2390 the automatic default.
 _SOFTWARE_VULKAN_DEVICES = ('llvmpipe', 'lavapipe', 'swiftshader')
@@ -975,8 +971,16 @@ def render_tonemap_preview(video_path, seconds, operator, out_dir, width=1280, z
         tile_tmp.unlink(missing_ok=True)
         crop_tmp.unlink(missing_ok=True)
         return None
-    os.replace(tile_tmp, tile)
-    os.replace(crop_tmp, crop)
+    try:
+        os.replace(tile_tmp, tile)
+        os.replace(crop_tmp, crop)
+    except OSError as ex:
+        # A save that resets the derived files removes the preview directory; the
+        # request that lost the race simply fails and the modal retries.
+        logger.warning(f"Tone map preview for {video_path} at {seconds}s ({operator}) could not be kept: {ex}")
+        tile_tmp.unlink(missing_ok=True)
+        crop_tmp.unlink(missing_ok=True)
+        return None
     return tile, crop
 
 

@@ -42,6 +42,7 @@ If Fireshare is useful to you, [GitHub Sponsors](https://github.com/sponsors/Sha
 - Share videos through unique links
 - Public / private feeds (private is link-only)
 - [Video transcoding with CPU or GPU](#transcoding-optional)
+- [HDR to SDR tone mapping for washed-out HDR captures](#hdr-videos)
 - Password protected videos
 - Game-based organization with cover art
 - Folder sharing

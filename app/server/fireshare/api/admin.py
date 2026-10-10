@@ -374,7 +374,7 @@ def get_admin_files():
             'has_1080p': v.info.has_1080p if v.info else False,
             'has_crop': v.info.has_crop if v.info else False,
             'is_hdr': bool(v.info.is_hdr) if v.info else False,
-            'tonemap': v.info.tonemap if v.info else None,
+            'tonemap': v.info.tonemap_operator if v.info else None,
             'has_sdr': bool(v.info.has_sdr) if v.info else False,
             'has_password': bool(v.info.password_hash) if v.info else False,
             'available': v.available,
