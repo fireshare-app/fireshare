@@ -5,6 +5,7 @@ import { createPlayer, useMedia, Poster } from '@videojs/react'
 import { Video, videoFeatures } from '@videojs/react/video'
 import CustomVideoSkin from './CustomVideoSkin'
 import usePlayableSources from './usePlayableSources'
+import { rememberSourceChoice } from '../../common/utils'
 
 // Tolerance threshold for checking if player is already at the desired start time (in seconds)
 const SEEK_TOLERANCE_SECONDS = 0.5
@@ -435,7 +436,11 @@ const PlayerWithSources = ({
         style={containerStyle}
         sources={sources}
         currentSourceIndex={currentSourceIndex}
-        onQualitySelect={setCurrentSourceIndex}
+        onQualitySelect={(index) => {
+          // A pick from the menu is the viewer's word on HDR versus SDR for this device.
+          rememberSourceChoice(sources?.[index])
+          setCurrentSourceIndex(index)
+        }}
       >
         <Video src={activeSrc} autoPlay={autoplay} playsInline={playsinline} preload="auto" />
         {poster && <Poster src={poster} alt="" />}
