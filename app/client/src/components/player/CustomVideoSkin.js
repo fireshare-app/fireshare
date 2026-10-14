@@ -147,18 +147,31 @@ function QualitySelector({ sources, currentSourceIndex, onSelect }) {
 
     onSelect(index)
 
-    if (media) {
-      const restoreTime = () => {
-        if (savedTime > 0) {
-          media.currentTime = savedTime
-        }
-        if (wasPlaying) {
-          const p = media.play()
-          if (p) p.catch(() => {})
-        }
+    if (!media) return
+
+    // Jump back to where the viewer was as soon as the new file's metadata is in, so
+    // the browser fetches that part of the file first rather than the start, and
+    // resume once it can play from there. Waiting for canplay to do both meant a
+    // load from the beginning, a frame of it on screen, and a second fetch for the
+    // real position, which on a slow link looked like a stall and triggered the
+    // automatic step down.
+    let restored = false
+    const restorePosition = () => {
+      if (restored) return
+      restored = true
+      if (savedTime > 0) {
+        media.currentTime = media.duration > 0 ? Math.min(savedTime, media.duration) : savedTime
       }
-      media.addEventListener('canplay', restoreTime, { once: true })
     }
+    const resume = () => {
+      restorePosition()
+      if (wasPlaying && media.paused) {
+        const p = media.play()
+        if (p) p.catch(() => {})
+      }
+    }
+    media.addEventListener('loadedmetadata', restorePosition, { once: true })
+    media.addEventListener('canplay', resume, { once: true })
   }
 
   return (

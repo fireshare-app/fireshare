@@ -48,6 +48,7 @@ import GameSearch from '../game/GameSearch'
 import SuggestionCard from '../cards/SuggestionCard'
 import UploaderMention from '../user/UploaderMention'
 import WaveformCropper from './WaveformCropper'
+import TonemapControls from './TonemapControls'
 
 const URL = getUrl()
 const PURL = getPublicWatchUrl()
@@ -1320,6 +1321,26 @@ const VideoModal = ({
                             setSelectedTime(t)
                             setUpdatable(true)
                           }}
+                        />
+                      </Box>
+                    )}
+
+                    {/* Dynamic range (edit mode only, HDR sources) */}
+                    {editMode && authenticated && vid.info?.is_hdr && (
+                      <Box>
+                        <Typography sx={labelSx}>Dynamic Range</Typography>
+                        <TonemapControls
+                          videoId={vid.video_id}
+                          videoInfo={vid.info}
+                          onInfoChange={(info) =>
+                            setVideo((prev) => (prev ? { ...prev, info: { ...prev.info, ...info } } : prev))
+                          }
+                          onConverted={() => {
+                            setPlayerVersion((v) => v + 1)
+                            setPosterCacheKey(Date.now())
+                          }}
+                          alertHandler={setAlert}
+                          getCurrentTime={() => playerRef.current?.currentTime() ?? 0}
                         />
                       </Box>
                     )}

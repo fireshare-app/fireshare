@@ -19,6 +19,7 @@
     "react-day-picker": "^9.14.0",
     "react-device-detect": "^2.2.2",
     "react-dom": "^18.1.0",
+    "react-easy-crop": "^6.2.4",
     "react-helmet": "^6.1.0",
     "react-is-visible": "^1.2.0",
     "react-markdown": "^10.1.0",

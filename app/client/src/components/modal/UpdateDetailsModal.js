@@ -25,6 +25,7 @@ import GameSearch from '../game/GameSearch'
 import DateField from './DateField'
 import { UploaderSelect, useUploaderCandidates } from '../user/UploaderPicker'
 import { labelSx, inputSx, rowBoxSx, dialogPaperSx } from '../../common/modalStyles'
+import TonemapControls from './TonemapControls'
 
 const modalSx = {
   position: 'absolute',
@@ -316,6 +317,10 @@ const UpdateDetailsModal = ({
   currentGame,
   currentHasPassword,
   currentUploader,
+  // The video's info (is_hdr, tonemap, has_sdr...) and how to push tone map changes
+  // back, so the Dynamic Range controls can live here too.
+  currentInfo,
+  onInfoChange,
   alertHandler,
 }) => {
   const [title, setTitle] = React.useState(currentTitle)
@@ -510,6 +515,21 @@ const UpdateDetailsModal = ({
 
               <LabeledField label="Uploader">
                 <UploaderSelect users={uploaderCandidates} value={uploader} onChange={setUploader} disabled={loading} />
+              </LabeledField>
+            </>
+          )}
+
+          {currentInfo?.is_hdr && (
+            <>
+              <Divider sx={{ borderColor: '#FFFFFF14' }} />
+
+              <LabeledField label="Dynamic Range">
+                <TonemapControls
+                  videoId={videoId}
+                  videoInfo={currentInfo}
+                  onInfoChange={onInfoChange}
+                  alertHandler={alertHandler}
+                />
               </LabeledField>
             </>
           )}

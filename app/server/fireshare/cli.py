@@ -507,11 +507,7 @@ def scan_videos(root):
         db.session.commit()
 
         # Generate metadata and posters for new videos, then fire webhooks
-        thumbnail_skip = current_app.config['THUMBNAIL_VIDEO_LOCATION'] or 0
-        if thumbnail_skip > 0 and thumbnail_skip <= 100:
-            thumbnail_skip = thumbnail_skip / 100
-        else:
-            thumbnail_skip = 0
+        thumbnail_skip = util.thumbnail_skip_fraction(current_app.config['THUMBNAIL_VIDEO_LOCATION'])
         processed_root = Path(current_app.config['PROCESSED_DIRECTORY'])
         discord_queue = []
         for nv in new_videos:
@@ -539,9 +535,8 @@ def scan_videos(root):
             if not poster_path.exists():
                 if not derived_path.exists():
                     derived_path.mkdir(parents=True)
-                duration = nv_info.duration if nv_info else 0
-                poster_time = int((duration or 0) * thumbnail_skip)
-                util.create_poster(video_link_path, poster_path, poster_time)
+                source_path, source_duration = util.playback_source(nv_info, processed_root) if nv_info else (video_link_path, 0)
+                util.create_poster(source_path, poster_path, int(source_duration * thumbnail_skip))
             poster_ready = poster_path.exists() and poster_path.stat().st_size > 0
             if not poster_ready:
                 logger.warning(f"Skipping webhook for {nv.video_id}: poster not ready")
@@ -643,11 +638,7 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
         domain = current_app.config['DOMAIN']
         videos_path = paths["video"]
         video_links = paths["processed"] / "video_links"
-        thumbnail_skip = current_app.config['THUMBNAIL_VIDEO_LOCATION'] or 0
-        if thumbnail_skip > 0 and thumbnail_skip <= 100:
-            thumbnail_skip = thumbnail_skip / 100
-        else:
-            thumbnail_skip = 0
+        thumbnail_skip = util.thumbnail_skip_fraction(current_app.config['THUMBNAIL_VIDEO_LOCATION'])
         
         config_file = open(paths["data"] / "config.json")
         config = json.load(config_file)
@@ -771,14 +762,13 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
                 derived_path = Path(processed_root, "derived", info.video_id)
                 video_path = Path(processed_root, "video_links", info.video_id + video_file.suffix)
                 if video_path.exists():
-                    
+                    source_path, source_duration = util.playback_source(info, processed_root)
                     poster_path = Path(derived_path, "poster.jpg")
                     should_create_poster = not poster_path.exists()
                     if should_create_poster:
                         if not derived_path.exists():
                             derived_path.mkdir(parents=True)
-                        poster_time = int((info.duration or 0) * thumbnail_skip)
-                        poster_ok = util.create_poster(video_path, derived_path / "poster.jpg", poster_time)
+                        poster_ok = util.create_poster(source_path, derived_path / "poster.jpg", int(source_duration * thumbnail_skip))
                         if not poster_ok:
                             logger.warning(f"Could not generate poster for video {info.video_id}")
                     else:
@@ -788,7 +778,7 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
                     if tag_ids:
                         boomerang_path = derived_path / "boomerang-preview.mp4"
                         if not boomerang_path.exists():
-                            util.create_boomerang_preview(video_path, boomerang_path)
+                            util.create_boomerang_preview(source_path, boomerang_path)
 
                     poster_ready = poster_path.exists() and poster_path.stat().st_size > 0
                     if discord_webhook_url and poster_ready:
@@ -893,10 +883,31 @@ def sync_metadata(video):
                 v.duration = duration
                 v.width = width
                 v.height = height
+                v.is_hdr = util.is_hdr_stream(vcodec)
                 db.session.add(v)
                 db.session.commit()
             else:
                 logger.warning(f"Missing or invalid symlink at {vpath} to video {v.video_id} (original location: {v.video.path})")
+
+@cli.command()
+@click.option("--all", "all_videos", is_flag=True, help="Re-check every video, not only those never checked")
+def detect_hdr(all_videos):
+    """Flag HDR videos from the colour tags sync-metadata already stored."""
+    with create_app().app_context():
+        query = VideoInfo.query.filter(VideoInfo.info != None)
+        if not all_videos:
+            query = query.filter(VideoInfo.is_hdr == None)
+        videos = query.all()
+        flagged = 0
+        for v in videos:
+            try:
+                v.is_hdr = util.is_hdr_stream(v.vcodec)
+            except (IndexError, TypeError, ValueError):
+                v.is_hdr = False
+            flagged += 1 if v.is_hdr else 0
+        if videos:
+            db.session.commit()
+            logger.info(f"Checked {len(videos):,} video(s) for HDR, {flagged:,} flagged")
 
 @cli.command()
 def create_web_videos():
@@ -952,8 +963,8 @@ def create_posters(regenerate, skip):
             if should_create_poster:
                 if not derived_path.exists():
                     derived_path.mkdir(parents=True)
-                poster_time = int((vi.duration or 0) * skip)
-                util.create_poster(video_path, derived_path / "poster.jpg", poster_time)
+                source_path, source_duration = util.playback_source(vi, processed_root)
+                util.create_poster(source_path, derived_path / "poster.jpg", int(source_duration * skip))
             else:
                 logger.debug(f"Skipping creation of poster for video {vi.video_id} because it exists at {str(poster_path)}")
 
@@ -979,7 +990,7 @@ def create_boomerang_posters(regenerate):
             if should_create_poster:
                 if not derived_path.exists():
                     derived_path.mkdir(parents=True)
-                util.create_boomerang_preview(video_path, poster_path)
+                util.create_boomerang_preview(util.playback_source(vi, processed_root)[0], poster_path)
             else:
                 logger.debug(f"Skipping creation of boomerang poster for video {vi.video_id} because it already exists")
 
@@ -1051,6 +1062,84 @@ def transcode_videos(regenerate, video, include_corrupt):
                 skipped_count = original_count - len(vinfos)
                 if skipped_count > 0:
                     logger.info(f"Skipping {skipped_count} video(s) previously marked as corrupt. Use --include-corrupt to retry them.")
+
+            # HDR videos get their SDR copy first, and the transcodes are then made from
+            # it: one with an operator chosen but no copy yet (an interrupted save, or a
+            # server that lacked the filters at the time), and, with automatic tone
+            # mapping on, any HDR video nothing has been chosen for yet.
+            auto_tonemap = transcoding_config.get('auto_tonemap', False)
+            thumbnail_skip = util.thumbnail_skip_fraction(current_app.config['THUMBNAIL_VIDEO_LOCATION'])
+            tonemap_default = None
+            if auto_tonemap:
+                tonemap_default = util.resolve_tonemap_default(transcoding_config.get('tonemap_default', 'auto'))
+                if not tonemap_default:
+                    logger.warning("Automatic tone mapping is on, but this ffmpeg build has no tone map filters")
+            sdr_items = []
+            for vi in vinfos:
+                if not vi.is_hdr:
+                    continue
+                video_path = Path(processed_root, "video_links", vi.video_id + vi.video.extension)
+                if not video_path.exists():
+                    continue
+                derived_path = Path(processed_root, "derived", vi.video_id)
+                sdr_path = derived_path / f"{vi.video_id}-sdr.mp4"
+                if vi.tonemap_operator:
+                    if sdr_path.exists():
+                        if not vi.has_sdr:
+                            vi.has_sdr = True
+                            db.session.commit()
+                        continue
+                    if vi.sdr_error and not regenerate:
+                        continue  # failed before; saving the video again retries it
+                    sdr_items.append((vi, video_path, derived_path, sdr_path))
+                elif tonemap_default and vi.tonemap is None and not vi.has_sdr and not vi.sdr_error:
+                    # Never chosen for this video. A tone map removed on purpose is stored
+                    # as an explicit 'none' and is left alone.
+                    vi.tonemap = tonemap_default
+                    db.session.commit()
+                    sdr_items.append((vi, video_path, derived_path, sdr_path))
+            for idx, (vi, video_path, derived_path, sdr_path) in enumerate(sdr_items, 1):
+                util.write_transcoding_status(paths['data'], idx, len(sdr_items), vi.title, resolution='SDR')
+                derived_path.mkdir(parents=True, exist_ok=True)
+                with util.video_lock(vi.video_id, wait=False) as locked:
+                    if not locked:
+                        logger.info(f"Skipping SDR copy of {vi.video_id} - the video is being edited")
+                        continue
+                    try:
+                        db.session.refresh(vi)
+                    except InvalidRequestError:
+                        continue
+                    if not vi.tonemap_operator or sdr_path.exists():
+                        continue
+                    cropped_path = derived_path / f"{vi.video_id}-cropped.mp4"
+                    source_path = cropped_path if vi.has_crop and cropped_path.exists() else video_path
+                    logger.info(f"[{idx}/{len(sdr_items)}] Tone mapping {vi.video_id} to SDR with {vi.tonemap_operator} ({vi.video.path})")
+                    success, failure_reason = util.create_sdr_video(
+                        source_path, sdr_path, vi.tonemap_operator, use_gpu, encoder_preference,
+                        data_path=paths['data'], assume_pq=util.stream_needs_pq_assumed(vi.vcodec),
+                    )
+                    if success:
+                        vi.has_sdr = True
+                        vi.sdr_error = None
+                        # Whatever transcodes exist were made from the HDR source; they
+                        # are remade from the SDR copy below.
+                        for height in resolutions:
+                            transcode_path = derived_path / f"{vi.video_id}-{height}p.mp4"
+                            if transcode_path.exists():
+                                transcode_path.unlink()
+                            setattr(vi, f'has_{height}p', False)
+                        # The poster and hover preview were taken from the HDR source;
+                        # retake them from the copy that now plays.
+                        source_path, source_duration = util.playback_source(vi, processed_root)
+                        util.create_poster(source_path, derived_path / "poster.jpg", int(source_duration * thumbnail_skip))
+                        boomerang_path = derived_path / "boomerang-preview.mp4"
+                        if boomerang_path.exists():
+                            util.create_boomerang_preview(source_path, boomerang_path)
+                    else:
+                        vi.sdr_error = util.sdr_failure_message(failure_reason)
+                        logger.warning(f"SDR copy of {vi.video_id} failed: {vi.sdr_error}")
+                    db.session.add(vi)
+                    db.session.commit()
 
             # Build work queue: list of (video_info, height) tuples that actually need transcoding
             # Also reconcile has_* flags if outputs already exist on disk.
@@ -1182,8 +1271,16 @@ def transcode_videos(regenerate, video, include_corrupt):
                     # A cropped video's transcodes are made from the crop, as the crop
                     # pipeline makes them. From the original they would play the whole
                     # uncut video to anyone moved down to a lower quality.
+                    # Likewise a tone-mapped video's transcodes come from its SDR copy,
+                    # or every quality but the source would still play washed out.
+                    sdr_path = derived_path / f"{vi.video_id}-sdr.mp4"
                     cropped_path = derived_path / f"{vi.video_id}-cropped.mp4"
-                    source_path = cropped_path if vi.has_crop and cropped_path.exists() else video_path
+                    if vi.has_sdr and sdr_path.exists():
+                        source_path = sdr_path
+                    elif vi.has_crop and cropped_path.exists():
+                        source_path = cropped_path
+                    else:
+                        source_path = video_path
 
                     logger.info(f"[{idx}/{total_jobs}] Transcoding {vi.video_id} to {height}p ({vi.video.path})")
                     success, failure_reason = util.transcode_video_quality(
@@ -1249,11 +1346,7 @@ def bulk_import(ctx, root):
             return
         util.create_lock(paths["data"])
 
-        thumbnail_skip = current_app.config['THUMBNAIL_VIDEO_LOCATION'] or 0
-        if thumbnail_skip > 0 and thumbnail_skip <= 100:
-            thumbnail_skip = thumbnail_skip / 100
-        else:
-            thumbnail_skip = 0
+        thumbnail_skip = util.thumbnail_skip_fraction(current_app.config['THUMBNAIL_VIDEO_LOCATION'])
 
         timing = {}
         s = time.time()
@@ -1262,6 +1355,9 @@ def bulk_import(ctx, root):
         s = time.time()
         ctx.invoke(sync_metadata)
         timing['sync_metadata'] = time.time() - s
+        s = time.time()
+        ctx.invoke(detect_hdr)
+        timing['detect_hdr'] = time.time() - s
         s = time.time()
         ctx.invoke(create_posters, skip=thumbnail_skip)
         timing['create_posters'] = time.time() - s
@@ -1593,11 +1689,16 @@ def scan_image(ctx, path, game_id, tag_ids, title, uploaded_by):
 
 @cli.command()
 def migrate_game_assets():
-    """Convert any non-webp game assets to webp at 100% quality."""
+    """Convert any non-webp game assets to webp at 100% quality, and make
+    sure every asset directory is readable by nginx."""
+    import stat
     from PIL import Image as PILImage
 
     _ASSET_SLOTS = ['hero_1', 'hero_2', 'logo_1', 'icon_1']
     _NON_WEBP_EXTENSIONS = ['.png', '.jpg', '.jpeg']
+    # Same as api/custom_games.py. nginx serves these as its own user, so a
+    # directory only its owner can enter means every image in it 403s.
+    _WORLD_TRAVERSABLE = stat.S_IROTH | stat.S_IXOTH
 
     with create_app().app_context():
         paths = current_app.config['PATHS']
@@ -1611,9 +1712,19 @@ def migrate_game_assets():
         skipped = 0
         errors = 0
 
+        fixed_modes = 0
         for game_dir in sorted(game_assets_base.iterdir()):
             if not game_dir.is_dir():
                 continue
+            # Custom-game directories made before the fix were created 0700.
+            if (game_dir.stat().st_mode & _WORLD_TRAVERSABLE) != _WORLD_TRAVERSABLE:
+                try:
+                    os.chmod(game_dir, 0o755)
+                    fixed_modes += 1
+                    logger.info(f"migrate-game-assets: made {game_dir.name} readable by the web server")
+                except OSError as e:
+                    logger.error(f"migrate-game-assets: could not chmod {game_dir}: {e}")
+                    errors += 1
             for slot in _ASSET_SLOTS:
                 webp_path = game_dir / f'{slot}.webp'
                 if webp_path.exists():
@@ -1633,7 +1744,10 @@ def migrate_game_assets():
                             errors += 1
                         break
 
-        logger.info(f"migrate-game-assets: complete — {converted} converted, {skipped} already webp, {errors} errors")
+        logger.info(
+            f"migrate-game-assets: complete — {converted} converted, {skipped} already webp, "
+            f"{fixed_modes} directories made readable, {errors} errors"
+        )
 
 
 if __name__=="__main__":

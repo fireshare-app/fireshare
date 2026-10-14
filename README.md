@@ -42,8 +42,9 @@ If Fireshare is useful to you, [GitHub Sponsors](https://github.com/sponsors/Sha
 - Share videos through unique links
 - Public / private feeds (private is link-only)
 - [Video transcoding with CPU or GPU](#transcoding-optional)
+- [HDR to SDR tone mapping for washed-out HDR captures](#hdr-videos)
 - Password protected videos
-- Game-based organization with cover art
+- Game-based organization with cover art, including games you add by hand with your own artwork
 - Folder sharing
 - Mobile device support
 - Uploads (optional, can be restricted)
@@ -255,6 +256,23 @@ Fireshare automatically selects the best available encoder.
 | ------- | -------------------------------- |
 | H.264   | Most compatible, faster encoding |
 | AV1     | Best compression, slower         |
+
+#### HDR Videos
+
+HDR captures (10-bit BT.2020 with the PQ or HLG transfer, as NVIDIA and console recorders produce) play back flat and washed out in most browsers, and plain transcodes inherit the problem. Fireshare flags these videos and can make a tone-mapped SDR copy at the source resolution, which then plays as the **Source** quality and is what the lower qualities are made from. The original file is never modified, and the copy can be removed again from the video's editor.
+
+Open an HDR video, choose **Edit**, and use the **Dynamic Range** row: pick an operator and apply it, or **Compare** the operators side by side on a few random frames of the video before choosing. Under Settings → Transcoding you can set the default operator and turn on automatic conversion of every HDR video (`transcoding.tonemap_default` and `transcoding.auto_tonemap` in `config.json`).
+
+| Operator | Needs                                  | Notes                                                  |
+| -------- | -------------------------------------- | ------------------------------------------------------ |
+| bt.2390  | ffmpeg with libplacebo + a Vulkan device | The broadcast standard. Even-handed and faithful. On the GPU with the NVIDIA runtime, otherwise through Mesa's software Vulkan, which is slow |
+| spline   | ffmpeg with libplacebo + a Vulkan device | libplacebo's own curve; keeps contrast and punch        |
+| bt.2446a | ffmpeg with libplacebo + a Vulkan device | The other broadcast standard; brighter and more vivid   |
+| hable    | ffmpeg with libzimg (zscale), or libplacebo + GPU | Default on CPU, darker and more contrasty      |
+| mobius   | ffmpeg with libzimg (zscale), or libplacebo + GPU | Lighter than hable                             |
+| reinhard | ffmpeg with libzimg (zscale), or libplacebo + GPU | Lightest                                       |
+
+`Auto` picks bt.2390 when libplacebo can run on a GPU and hable otherwise. When a GPU is available every operator runs on it through libplacebo; without one, hable, mobius and reinhard run on the CPU. Each operator shows a GPU or CPU badge where it is chosen. Operators the server's ffmpeg cannot run are greyed out. Both images ship every operator; for bt.2390 to use the GPU the container needs `graphics` in `NVIDIA_DRIVER_CAPABILITIES`, which the full image sets by default.
 
 ### Docker Environment Variables
 

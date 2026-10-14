@@ -49,6 +49,10 @@ DEFAULT_CONFIG = {
     "enable_480p": True,
     "enable_720p": True,
     "enable_1080p": True,
+    # HDR -> SDR tone mapping. "auto" is bt.2390 on a GPU and hable otherwise; the
+    # automatic conversion of every HDR video stays off until an admin turns it on.
+    "tonemap_default": "auto",
+    "auto_tonemap": False,
   }
 }
 
@@ -63,3 +67,13 @@ DISCORD_LOGIN_WARNING = (
 
 SUPPORTED_FILE_TYPES = ['mp4', 'm4v', 'mov', 'webm']
 SUPPORTED_FILE_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.webm']
+
+# HDR -> SDR tone map operators, in the order the UI lists them. All run through
+# libplacebo when it has a GPU; hable, mobius and reinhard can also run through the
+# built-in tonemap filter (which needs zscale/libzimg) on the CPU.
+TONEMAP_OPERATORS = ('bt2390', 'spline', 'bt2446a', 'hable', 'mobius', 'reinhard')
+# The curves only libplacebo has; the rest also exist in the built-in tonemap filter.
+TONEMAP_PLACEBO_ONLY = ('bt2390', 'spline', 'bt2446a')
+# Stored in VideoInfo.tonemap when the tone map was removed on purpose, so the
+# automatic scan does not put the default back. NULL means nothing was ever chosen.
+TONEMAP_OFF = 'none'

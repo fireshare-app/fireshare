@@ -22,6 +22,7 @@ import EditIcon from '@mui/icons-material/Edit'
 import DeleteIcon from '@mui/icons-material/Delete'
 import CheckIcon from '@mui/icons-material/Check'
 import ImageIcon from '@mui/icons-material/Image'
+import AddIcon from '@mui/icons-material/Add'
 import { useNavigate } from 'react-router-dom'
 import { GameService } from '../services'
 import { dialogPaperSx, dialogTitleSx, helperTextSx, checkboxSx } from '../common/modalStyles'
@@ -29,8 +30,10 @@ import { recordAssetBust, applyAssetBusts } from '../services/GameService'
 import { getGameAssetUrl } from '../common/utils'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import EditGameAssetsModal from '../components/modal/EditGameAssetsModal'
+import CustomGameModal from '../components/modal/CustomGameModal'
+import SnackbarAlert from '../components/alert/SnackbarAlert'
 
-const Games = ({ authenticated, searchText }) => {
+const Games = ({ authenticated, searchText, isAdmin, can }) => {
   const [games, setGames] = React.useState([])
   const [loading, setLoading] = React.useState(true)
   const [editMode, setEditMode] = React.useState(false)
@@ -39,10 +42,13 @@ const Games = ({ authenticated, searchText }) => {
   const [deleteAssociatedVideos, setDeleteAssociatedVideos] = React.useState(false)
   const [toolbarTarget, setToolbarTarget] = React.useState(null)
   const [editingGame, setEditingGame] = React.useState(null)
+  const [addingGame, setAddingGame] = React.useState(false)
+  const [alert, setAlert] = React.useState({ open: false })
   const [loadedHeroes, setLoadedHeroes] = React.useState(new Set())
   const navigate = useNavigate()
   const theme = useTheme()
   const isMdDown = useMediaQuery(theme.breakpoints.down('md'))
+  const canManageGames = Boolean(isAdmin) || (typeof can === 'function' && can('manage_games'))
 
   // Filter games based on search text
   const filteredGames = React.useMemo(() => {
@@ -159,10 +165,40 @@ const Games = ({ authenticated, searchText }) => {
     )
   }
 
+  // A custom game comes back from the server with fresh URLs, but the browser
+  // may still hold the old image for an edited slot, so bust those the same way
+  // a SteamGridDB asset change does.
+  const handleCustomGameSaved = (saved) => {
+    const bust = Date.now()
+    const withBust = {
+      ...saved,
+      hero_url: getGameAssetUrl(saved.steamgriddb_id, 'hero_1', bust),
+      banner_url: getGameAssetUrl(saved.steamgriddb_id, 'hero_2', bust),
+      logo_url: getGameAssetUrl(saved.steamgriddb_id, 'logo_1', bust),
+      icon_url: getGameAssetUrl(saved.steamgriddb_id, 'icon_1', bust),
+    }
+    recordAssetBust(saved.steamgriddb_id)
+    window.dispatchEvent(
+      new CustomEvent('gameAssetsUpdated', { detail: { steamgriddbId: saved.steamgriddb_id, bust } }),
+    )
+    if (editingGame) {
+      setGames((prev) => prev.map((g) => (g.steamgriddb_id === saved.steamgriddb_id ? withBust : g)))
+      setAlert({ open: true, type: 'success', message: `Updated ${saved.name}` })
+    } else {
+      setGames((prev) => [...prev, withBust])
+      setAlert({ open: true, type: 'success', message: `Added ${saved.name}` })
+    }
+    setEditingGame(null)
+    setAddingGame(false)
+  }
+
   if (loading) return <LoadingSpinner />
 
   return (
     <Box>
+      <SnackbarAlert severity={alert.type} open={alert.open} setOpen={(open) => setAlert({ ...alert, open })}>
+        {alert.message}
+      </SnackbarAlert>
       <>
         {toolbarTarget
           ? ReactDOM.createPortal(
@@ -196,6 +232,16 @@ const Games = ({ authenticated, searchText }) => {
                           Delete{selectedGames.size > 0 && !isMdDown ? ` (${selectedGames.size})` : null}
                         </Button>
                       </ButtonGroup>
+                    ) : null}
+                    {!editMode && canManageGames ? (
+                      <Button
+                        variant="contained"
+                        startIcon={<AddIcon />}
+                        onClick={() => setAddingGame(true)}
+                        sx={{ height: 38, flexShrink: 0, whiteSpace: 'nowrap', px: { xs: 1.5, sm: 2 } }}
+                      >
+                        {isMdDown ? 'Add' : 'Add game'}
+                      </Button>
                     ) : null}
                     <IconButton
                       onClick={handleEditModeToggle}
@@ -354,12 +400,21 @@ const Games = ({ authenticated, searchText }) => {
           })}
       </Grid>
 
-      {/* Edit Game Assets Modal */}
+      {/* Edit Game Assets Modal (SteamGridDB games pick from a pool, custom games upload) */}
       <EditGameAssetsModal
         game={editingGame}
-        open={!!editingGame}
+        open={Boolean(editingGame) && !editingGame.custom}
         onClose={() => setEditingGame(null)}
         onSaved={handleAssetSaved}
+      />
+      <CustomGameModal
+        game={editingGame?.custom ? editingGame : null}
+        open={addingGame || Boolean(editingGame?.custom)}
+        onClose={() => {
+          setAddingGame(false)
+          setEditingGame(null)
+        }}
+        onSaved={handleCustomGameSaved}
       />
 
       {/* Delete Confirmation Dialog */}

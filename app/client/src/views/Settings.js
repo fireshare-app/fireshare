@@ -23,6 +23,7 @@ import {
   useTheme,
 } from '@mui/material'
 import SnackbarAlert from '../components/alert/SnackbarAlert'
+import { TONEMAP_LABELS, deviceLabel, OperatorInfo } from '../components/modal/TonemapCompareModal'
 import SaveIcon from '@mui/icons-material/Save'
 import SensorsIcon from '@mui/icons-material/Sensors'
 import RssFeedIcon from '@mui/icons-material/RssFeed'
@@ -140,6 +141,8 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
       setActiveTab(visibleTabs[0].key)
     }
   }, [visibleTabs, activeTab])
+  // What tone map operators this server's ffmpeg can run, for the HDR default select.
+  const [tonemapCaps, setTonemapCaps] = React.useState(null)
   const [transcodingStatus, setTranscodingStatus] = React.useState({
     enabled: false,
     gpu_enabled: false,
@@ -308,6 +311,13 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
     return adminSSE.subscribeTranscoding((data) => {
       setTranscodingStatus((prev) => ({ ...prev, is_running: data.is_running }))
     })
+  }, [transcodingStatus.enabled])
+
+  React.useEffect(() => {
+    if (!transcodingStatus.enabled) return
+    VideoService.getTonemapCapabilities()
+      .then((res) => setTonemapCaps(res.data))
+      .catch(() => setTonemapCaps({ operators: [], auto_default: null }))
   }, [transcodingStatus.enabled])
 
   React.useEffect(() => {
@@ -1208,6 +1218,64 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
                           />
                         }
                         label="Automatically transcode new videos"
+                      />
+                      <FormControl fullWidth size="small">
+                        <InputLabel variant="standard" htmlFor="tonemap-default">
+                          HDR Tone Map
+                        </InputLabel>
+                        <NativeSelect
+                          value={updatedConfig.transcoding?.tonemap_default || 'auto'}
+                          inputProps={{ id: 'tonemap-default' }}
+                          onChange={(e) =>
+                            setUpdatedConfig((prev) => ({
+                              ...prev,
+                              transcoding: { ...prev.transcoding, tonemap_default: e.target.value },
+                            }))
+                          }
+                        >
+                          <option value="auto">
+                            Auto{tonemapCaps ? ` (${tonemapCaps.auto_default || 'none available'})` : ''}
+                          </option>
+                          {(tonemapCaps?.operators || []).map((op) => (
+                            <option key={op.id} value={op.id} disabled={!op.available}>
+                              {TONEMAP_LABELS[op.id] || op.id}
+                              {deviceLabel(op) ? ` · ${deviceLabel(op)}` : ''}
+                              {op.note ? ` – ${op.note}` : ''}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                      </FormControl>
+                      <Typography
+                        variant="caption"
+                        sx={{ color: 'text.secondary', mt: -1, display: 'flex', alignItems: 'center', gap: 0.5 }}
+                      >
+                        <span>
+                          The operator used when an HDR video is converted to SDR. Auto picks bt.2390 on a GPU and hable
+                          otherwise. Each video can still be compared and changed from its editor.
+                        </span>
+                        <OperatorInfo
+                          operator={
+                            updatedConfig.transcoding?.tonemap_default &&
+                            updatedConfig.transcoding.tonemap_default !== 'auto'
+                              ? updatedConfig.transcoding.tonemap_default
+                              : tonemapCaps?.auto_default
+                          }
+                        />
+                      </Typography>
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={updatedConfig.transcoding?.auto_tonemap === true}
+                            onChange={(e) =>
+                              setUpdatedConfig((prev) => ({
+                                ...prev,
+                                transcoding: { ...prev.transcoding, auto_tonemap: e.target.checked },
+                              }))
+                            }
+                          />
+                        }
+                        label="Automatically tone map HDR videos to SDR"
                       />
                       <Box sx={{ display: 'flex', gap: 1 }}>
                         {!transcodingStatus.is_running ? (

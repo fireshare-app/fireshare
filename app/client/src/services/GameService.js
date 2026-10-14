@@ -39,6 +39,20 @@ const service = {
   updateGameAsset(gameId, assetType, url) {
     return Api().put(`/api/games/${gameId}/assets`, { asset_type: assetType, url })
   },
+  // Custom games carry their artwork as multipart uploads. The server crops and
+  // re-encodes every image, which can outlast the default timeout on large files.
+  createCustomGame(formData) {
+    return Api().post('/api/games/custom', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+  },
+  updateCustomGame(gameId, formData) {
+    return Api().put(`/api/games/custom/${gameId}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+  },
   getGames() {
     return Api().get('/api/games')
   },

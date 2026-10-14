@@ -160,7 +160,9 @@ function applyRenameOperation(title, op, find, replace, prefix, suffix) {
 
 const VideoFileRow = React.memo(function VideoFileRow({ file, isSelected, onToggle, hiddenColumns }) {
   const displayName = file.title || file.filename
-  const hasTranscodes = file.has_480p || file.has_720p || file.has_1080p
+  // The SDR copy of an HDR source is a derived rendition like the resolution transcodes.
+  const sdrState = file.has_sdr ? 'ready' : file.sdr_error ? 'failed' : file.is_hdr && file.tonemap ? 'pending' : null
+  const hasTranscodes = file.has_480p || file.has_720p || file.has_1080p || !!sdrState
   return (
     <TableRow
       hover
@@ -267,7 +269,7 @@ const VideoFileRow = React.memo(function VideoFileRow({ file, isSelected, onTogg
       {/* Resolution */}
       {!hiddenColumns.has('Resolution') && (
         <TableCell sx={{ ...bodyCellSx }}>
-          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
             <Chip
               label={formatResolution(file.width, file.height)}
               size="small"
@@ -279,6 +281,21 @@ const VideoFileRow = React.memo(function VideoFileRow({ file, isSelected, onTogg
                 '& .MuiChip-label': { px: 0.75 },
               }}
             />
+            {file.is_hdr && (
+              <Chip
+                label="HDR"
+                title="HDR source"
+                size="small"
+                sx={{
+                  height: 17,
+                  fontSize: 10,
+                  bgcolor: '#F0824A18',
+                  color: '#F0824ABB',
+                  border: '1px solid #F0824A33',
+                  '& .MuiChip-label': { px: 0.75 },
+                }}
+              />
+            )}
           </Box>
         </TableCell>
       )}
@@ -288,6 +305,32 @@ const VideoFileRow = React.memo(function VideoFileRow({ file, isSelected, onTogg
         <TableCell sx={{ ...bodyCellSx }}>
           {hasTranscodes ? (
             <Box sx={{ display: 'flex', gap: 0.4, flexWrap: 'wrap' }}>
+              {sdrState && (
+                <Chip
+                  label="SDR"
+                  title={
+                    sdrState === 'ready'
+                      ? `Tone mapped to SDR (${file.tonemap})`
+                      : sdrState === 'failed'
+                        ? `SDR conversion failed: ${file.sdr_error}`
+                        : `Converting to SDR (${file.tonemap})`
+                  }
+                  size="small"
+                  sx={{
+                    height: 17,
+                    fontSize: 10,
+                    bgcolor: sdrState === 'ready' ? '#1DB95418' : sdrState === 'failed' ? '#F0824A18' : 'transparent',
+                    color: sdrState === 'ready' ? '#1DB954' : sdrState === 'failed' ? '#F5A37C' : '#FFFFFF66',
+                    border:
+                      sdrState === 'ready'
+                        ? '1px solid #1DB95433'
+                        : sdrState === 'failed'
+                          ? '1px solid #F0824A66'
+                          : '1px dashed #FFFFFF33',
+                    '& .MuiChip-label': { px: 0.75 },
+                  }}
+                />
+              )}
               {file.has_1080p && (
                 <Chip
                   label="1080p"
@@ -338,20 +381,18 @@ const VideoFileRow = React.memo(function VideoFileRow({ file, isSelected, onTogg
       {!hiddenColumns.has('Cropped') && (
         <TableCell sx={{ ...bodyCellSx }}>
           {file.has_crop ? (
-            <Box sx={{ display: 'flex', alignItems: 'center' }}>
-              <Chip
-                label="Cropped"
-                size="small"
-                sx={{
-                  height: 17,
-                  fontSize: 10,
-                  bgcolor: '#FF990018',
-                  color: '#FF9900BB',
-                  border: '1px solid #FF990033',
-                  '& .MuiChip-label': { px: 0.75 },
-                }}
-              />
-            </Box>
+            <Chip
+              label="Cropped"
+              size="small"
+              sx={{
+                height: 17,
+                fontSize: 10,
+                bgcolor: '#FF990018',
+                color: '#FF9900BB',
+                border: '1px solid #FF990033',
+                '& .MuiChip-label': { px: 0.75 },
+              }}
+            />
           ) : (
             <Typography sx={{ fontSize: 11, color: '#FFFFFF33' }}>—</Typography>
           )}
@@ -979,20 +1020,10 @@ export default function VideoFileManager({ setAlert }) {
     )
   }
 
-  // Base columns: checkbox + name + size + visible data columns
-  // checkbox(1) + name(1) + size(1) + total_size(1) + duration(1) + resolution(1) + transcodes(1) + cropped(1) + privacy(1) + date(1) = 10
-  // minus hidden columns
-  const visibleDataCols = [
-    'Duration',
-    'Resolution',
-    'Transcodes',
-    'Cropped',
-    'Privacy',
-    'Password',
-    'Date',
-    'Total Size',
-  ].filter((c) => !hiddenColumns.has(c))
-  const COL_SPAN = 4 + visibleDataCols.length // checkbox + privacy spacer + name + size + visible toggleable cols
+  // Base columns: checkbox + privacy spacer + name + size, plus whichever toggleable columns are visible.
+  // Derived from TOGGLEABLE_COLUMNS so a new column cannot leave the folder rows one cell short.
+  const visibleDataCols = TOGGLEABLE_COLUMNS.filter((c) => !hiddenColumns.has(c))
+  const COL_SPAN = 4 + visibleDataCols.length
 
   const renamePreviewFiles = selectedFiles.slice(0, 3)
 
@@ -1782,12 +1813,12 @@ export default function VideoFileManager({ setAlert }) {
                 !hiddenColumns.has('Resolution') && {
                   col: null,
                   label: 'Resolution',
-                  sx: { width: 80, whiteSpace: 'nowrap' },
+                  sx: { width: 110, whiteSpace: 'nowrap' },
                 },
                 !hiddenColumns.has('Transcodes') && {
                   col: null,
                   label: 'Transcodes',
-                  sx: { width: 155, minWidth: 155, whiteSpace: 'nowrap' },
+                  sx: { width: 195, minWidth: 195, whiteSpace: 'nowrap' },
                 },
                 !hiddenColumns.has('Cropped') && {
                   col: null,

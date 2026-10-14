@@ -7,6 +7,7 @@ import json
 import subprocess as sp
 import xxhash
 from fireshare import logger
+from fireshare.constants import TONEMAP_OPERATORS, TONEMAP_PLACEBO_ONLY, TONEMAP_OFF  # noqa: F401 (re-exported)
 import time
 import glob
 import shutil
@@ -218,6 +219,15 @@ def clear_transcoding_status(data_path: Path):
             os.remove(status_file)
         except Exception as e:
             logger.warning(f"Failed to remove transcoding status file: {e}")
+
+def clear_transcoding_status_if_mine(data_path: Path):
+    """
+    Removes the status file only when this process wrote it last. An editor's rebuild
+    thread reports through the same file as the scheduled scan, which runs in its own
+    process; whichever finishes first must not wipe the other's progress.
+    """
+    if read_transcoding_status(data_path).get('pid') == os.getpid():
+        clear_transcoding_status(data_path)
 
 
 def video_id(path: Path, mb=16):
@@ -549,6 +559,35 @@ def create_audio_extract(source_path, out_path):
     return result == 0
 
 
+def thumbnail_skip_fraction(setting):
+    """THUMBNAIL_VIDEO_LOCATION as a fraction of the duration: a percentage from 1 to 100, else 0."""
+    skip = setting or 0
+    return skip / 100 if 0 < skip <= 100 else 0
+
+
+def playback_source(video_info, processed_root):
+    """The file a video plays from, and its length in seconds.
+
+    The SDR copy where one exists, else the crop, else the original. Posters and hover
+    previews are taken from this, so a tone-mapped or cropped video's thumbnail shows
+    what plays rather than the washed-out HDR source or the uncut file.
+    """
+    processed_root = Path(processed_root)
+    video_id = video_info.video_id
+    derived = processed_root / "derived" / video_id
+    path = processed_root / "video_links" / f"{video_id}{video_info.video.extension}"
+    duration = video_info.duration or 0
+    cropped = derived / f"{video_id}-cropped.mp4"
+    if video_info.has_crop and cropped.exists():
+        path = cropped
+        end = video_info.end_time if video_info.end_time is not None else duration
+        duration = max(end - (video_info.start_time or 0), 0)
+    sdr = derived / f"{video_id}-sdr.mp4"
+    if video_info.has_sdr and sdr.exists():
+        path = sdr  # cut from the crop when there is one, so the length stands
+    return path, duration
+
+
 def create_poster(video_path, out_path, second=0):
     s = time.time()
     out_path = Path(out_path)
@@ -556,7 +595,9 @@ def create_poster(video_path, out_path, second=0):
     # reads one ffmpeg is still writing, and a failed attempt leaves the old one in place.
     tmp_path = out_path.parent / (out_path.stem + '.tmp' + out_path.suffix)
     # -ss before -i uses fast keyframe seek, reliable even for large high-bitrate files
-    cmd = ['ffmpeg', '-v', 'quiet', '-y', '-ss', str(second), '-i', str(video_path), '-vframes', '1', '-vf', 'scale=iw:ih:force_original_aspect_ratio=decrease', str(tmp_path)]
+    # -threads 1 for the same reason as render_tonemap_preview: FFmpeg 6.1.0 can abort
+    # when a one-frame limit stops a threaded decode of a stream-copied file.
+    cmd = ['ffmpeg', '-v', 'quiet', '-y', '-threads', '1', '-ss', str(second), '-i', str(video_path), '-vframes', '1', '-vf', 'scale=iw:ih:force_original_aspect_ratio=decrease', str(tmp_path)]
     logger.debug(f"$ {' '.join(cmd)}")
     ret = sp.call(cmd)
     e = time.time()
@@ -792,6 +833,353 @@ def check_nvenc_available(encoder=None):
 
 
 
+# ---------------------------------------------------------------------------
+# HDR detection and HDR -> SDR tone mapping
+# ---------------------------------------------------------------------------
+
+# ffprobe's names for the HDR transfer functions: PQ (HDR10) and HLG.
+HDR_TRANSFERS = ('smpte2084', 'arib-std-b67')
+
+# Vulkan devices that are really the CPU. libplacebo runs on them, but many times slower
+# than the zscale chain, so they do not make bt2390 the automatic default.
+_SOFTWARE_VULKAN_DEVICES = ('llvmpipe', 'lavapipe', 'swiftshader')
+
+
+def _stream_bit_depth(stream):
+    match = re.search(r'p(\d+)(le|be)?$', stream.get('pix_fmt') or '')
+    return int(match.group(1)) if match else 8
+
+
+def is_hdr_stream(stream):
+    """Whether an ffprobe video stream is HDR, from its colour tags.
+
+    PQ and HLG are HDR by definition. A 10-bit BT.2020 stream with no transfer tag at
+    all is, in practice, an HDR capture that lost its metadata; it is flagged too, and
+    the tone map then assumes PQ (see `stream_needs_pq_assumed`).
+    """
+    if not stream:
+        return False
+    transfer = (stream.get('color_transfer') or '').lower()
+    if transfer in HDR_TRANSFERS:
+        return True
+    if transfer and transfer != 'unknown':
+        return False
+    primaries = (stream.get('color_primaries') or '').lower()
+    return primaries == 'bt2020' and _stream_bit_depth(stream) >= 10
+
+
+def stream_needs_pq_assumed(stream):
+    """An HDR stream with no transfer tag, which the tone map has to treat as PQ."""
+    transfer = (stream.get('color_transfer') or '').lower() if stream else ''
+    return is_hdr_stream(stream) and transfer not in HDR_TRANSFERS
+
+
+# libplacebo's names for the curves, where they differ from the ids.
+_PLACEBO_CURVES = {'bt2390': 'bt.2390', 'bt2446a': 'bt.2446a'}
+
+
+def tonemap_device(operator):
+    """'gpu' or 'cpu': where `operator` would run here. The libplacebo-only curves run
+    wherever libplacebo does; the other curves go through libplacebo as well when it
+    has a real GPU, and through zscale + the built-in tonemap filter (CPU) otherwise."""
+    if operator in TONEMAP_PLACEBO_ONLY:
+        return 'gpu' if vulkan_device() == 'hardware' else 'cpu'
+    return 'gpu' if 'libplacebo' in ffmpeg_filters() and vulkan_device() == 'hardware' else 'cpu'
+
+
+def _uses_libplacebo(operator):
+    return operator in TONEMAP_PLACEBO_ONLY or tonemap_device(operator) == 'gpu'
+
+
+def tonemap_filter(operator, assume_pq=False):
+    """The ffmpeg input arguments and video filter that turn HDR frames into BT.709 SDR.
+
+    Both chains end in 8-bit 4:2:0 limited range tagged BT.709, which every encoder the
+    transcodes use accepts. Returns (input_args, filter).
+    """
+    if operator not in TONEMAP_OPERATORS:
+        raise ValueError(f"Unknown tone map operator: {operator}")
+    # A stream with no transfer tag is treated as HDR10. The tags are set on the decoded
+    # frames so the conversion reads them; the file is not touched.
+    prefix = 'setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc,' if assume_pq else ''
+    if _uses_libplacebo(operator):
+        curve = _PLACEBO_CURVES.get(operator, operator)
+        vf = (f"{prefix}format=yuv420p10le,hwupload,"
+              f"libplacebo=tonemapping={curve}:colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:format=yuv420p,"
+              "hwdownload,format=yuv420p")
+        return vulkan_device_args(), vf
+    # PQ/HLG to linear light with 100 nits at 1.0, float RGB in BT.709 primaries, the
+    # curve, then back to BT.709 gamma. desat=0 keeps bright colours from greying out.
+    vf = (f"{prefix}zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+          f"tonemap=tonemap={operator}:desat=0,"
+          "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+    return [], vf
+
+
+_ffmpeg_filters_cache = None
+# ('checked', kind, name, index) once probed: kind is 'hardware', 'software' or None,
+# index the loader-order device to pass to ffmpeg when the GPU is not the first one.
+_vulkan_device_cache = ('unchecked', None, None, None)
+_VULKAN_ICD_DIRS = ('/etc/vulkan/icd.d', '/usr/share/vulkan/icd.d')
+
+
+def ffmpeg_filters():
+    """The names of the filters this ffmpeg build has. Cached for the process."""
+    global _ffmpeg_filters_cache
+    if _ffmpeg_filters_cache is None:
+        names = set()
+        try:
+            result = sp.run(['ffmpeg', '-hide_banner', '-filters'], capture_output=True, text=True, timeout=30)
+            for line in result.stdout.splitlines():
+                parts = line.split()
+                # " .S. tonemap  V->V  Conversion to/from different dynamic ranges."
+                if len(parts) >= 3 and '->' in parts[2]:
+                    names.add(parts[1])
+        except (OSError, sp.SubprocessError) as ex:
+            logger.warning(f"Could not list ffmpeg filters: {ex}")
+        _ffmpeg_filters_cache = names
+    return _ffmpeg_filters_cache
+
+
+def _is_software_vulkan(name):
+    return any(m in name.lower() for m in _SOFTWARE_VULKAN_DEVICES)
+
+
+def _probe_vulkan(index=None):
+    """Bring up Vulkan device `index` (loader order; None for the loader's first) in
+    ffmpeg. Returns (device name or None, loader error lines)."""
+    device = f'vulkan=vk:{index}' if index is not None else 'vulkan=vk'
+    cmd = ['ffmpeg', '-hide_banner', '-v', 'verbose', '-init_hw_device', device, '-filter_hw_device', 'vk',
+           '-f', 'lavfi', '-i', 'color=black:s=64x64:d=1:r=1',
+           '-vf', 'format=yuv420p,hwupload,hwdownload,format=yuv420p', '-frames:v', '1', '-f', 'null', '-']
+    # The loader says why a driver it found could not be used (a missing library, most
+    # often); that is the one line worth having when the GPU is not picked up.
+    env = dict(os.environ, VK_LOADER_DEBUG='error')
+    try:
+        result = sp.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+    except (OSError, sp.SubprocessError) as ex:
+        return None, [str(ex)]
+    # e.g. "ERROR: libGLdispatch.so.0: cannot open shared object file", once per attempt.
+    errors = list(dict.fromkeys(line.strip() for line in result.stderr.splitlines() if line.startswith('ERROR')))
+    if result.returncode != 0:
+        return None, errors or [result.stderr.strip()[-300:]]
+    match = re.search(r'Using device:\s*(.+)', result.stderr)
+    return (match.group(1).strip() if match else 'unnamed'), errors
+
+
+def _vulkan_icd_manifests():
+    """The driver manifests the Vulkan loader will find, as 'dir/name' strings."""
+    found = []
+    for d in _VULKAN_ICD_DIRS:
+        try:
+            found.extend(os.path.join(d, n) for n in sorted(os.listdir(d)) if n.endswith('.json'))
+        except OSError:
+            continue
+    return found
+
+
+_nvidia_driver_cache = None
+
+
+def _nvidia_driver_present():
+    """Whether the NVIDIA Vulkan driver library is in this container, i.e. the container
+    toolkit mounted the driver for the graphics capability. The manifest that names it
+    ships with the image, so it says nothing on its own."""
+    global _nvidia_driver_cache
+    if _nvidia_driver_cache is None:
+        try:
+            result = sp.run(['ldconfig', '-p'], capture_output=True, text=True, timeout=30)
+            _nvidia_driver_cache = 'libGLX_nvidia.so.0' in result.stdout
+        except (OSError, sp.SubprocessError):
+            _nvidia_driver_cache = False
+    return _nvidia_driver_cache
+
+
+def vulkan_device():
+    """'hardware', 'software' or None: what libplacebo would run on here. Cached.
+
+    The loader lists devices in its own order, so when the first is a software one the
+    next few are tried and a GPU among them is remembered by index for the filter.
+    """
+    global _vulkan_device_cache
+    if _vulkan_device_cache[0] == 'unchecked':
+        kind, index = None, None
+        name, errors = _probe_vulkan()
+        if name and _is_software_vulkan(name):
+            for candidate in range(1, 4):
+                other, _ = _probe_vulkan(candidate)
+                if not other:
+                    break
+                if not _is_software_vulkan(other):
+                    name, index = other, candidate
+                    break
+        manifests = _vulkan_icd_manifests()
+        if name:
+            # Unknown names are treated as software: the only cost is that bt2390
+            # is not picked automatically.
+            kind = 'software' if _is_software_vulkan(name) else 'hardware'
+            logger.info(f"Vulkan device for tone mapping: {name} ({kind}{f', device {index}' if index else ''}); "
+                        f"driver manifests: {', '.join(manifests) or 'none'}")
+        else:
+            logger.info(f"No usable Vulkan device for tone mapping: {' | '.join(errors)[-300:]}; "
+                        f"driver manifests: {', '.join(manifests) or 'none'}")
+        if kind != 'hardware':
+            if _nvidia_driver_present():
+                logger.warning("The NVIDIA Vulkan driver is in this container but the GPU was not picked up; "
+                               "the loader said: " + (' | '.join(errors) or 'nothing'))
+            elif any(c in os.environ.get('NVIDIA_DRIVER_CAPABILITIES', '') for c in ('graphics', 'all')):
+                logger.warning("NVIDIA_DRIVER_CAPABILITIES asks for graphics, but no NVIDIA driver libraries were "
+                               "mounted into this container (libGLX_nvidia.so.0 is missing); is the GPU exposed "
+                               "with --gpus or the nvidia runtime?")
+        _vulkan_device_cache = ('checked', kind, name, index)
+    return _vulkan_device_cache[1]
+
+
+def vulkan_device_args():
+    """The ffmpeg input arguments that put libplacebo on the device vulkan_device() chose."""
+    vulkan_device()
+    index = _vulkan_device_cache[3]
+    device = f'vulkan=vk:{index}' if index is not None else 'vulkan=vk'
+    return ['-init_hw_device', device, '-filter_hw_device', 'vk']
+
+
+def tonemap_capabilities():
+    """Which operators this ffmpeg build can run, and what `auto` resolves to."""
+    filters = ffmpeg_filters()
+    cpu_ok = 'zscale' in filters and 'tonemap' in filters
+    has_placebo = 'libplacebo' in filters
+    vulkan = vulkan_device() if has_placebo else None
+    operators = []
+    for op in TONEMAP_OPERATORS:
+        # device says where the work runs ('gpu' or 'cpu', None when the operator is
+        # unavailable); note is the explanation the UI shows next to it, when any.
+        if op in TONEMAP_PLACEBO_ONLY:
+            if not has_placebo:
+                available, device, note = False, None, 'ffmpeg was built without libplacebo'
+            elif vulkan is None:
+                available, device, note = False, None, 'no Vulkan device: install a Vulkan driver (mesa-vulkan-drivers) or expose the GPU'
+            elif vulkan == 'hardware':
+                available, device, note = True, 'gpu', None
+            elif _nvidia_driver_present():
+                available, device, note = True, 'cpu', ('software Vulkan: the NVIDIA driver is in the container but the '
+                                                        'GPU was not picked up, see the server log')
+            else:
+                caps_env = os.environ.get('NVIDIA_DRIVER_CAPABILITIES', '')
+                hint = ('' if any(c in caps_env for c in ('graphics', 'all'))
+                        else '; add graphics to NVIDIA_DRIVER_CAPABILITIES for the GPU')
+                available, device, note = True, 'cpu', f'software Vulkan, several times slower than hable{hint}'
+        elif has_placebo and vulkan == 'hardware':
+            # libplacebo has these curves too, and runs them on the GPU.
+            available, device, note = True, 'gpu', None
+        elif cpu_ok:
+            # zscale and the built-in tonemap filter are CPU filters whatever the host has.
+            available, device, note = True, 'cpu', None
+        else:
+            available, device, note = False, None, 'ffmpeg was built without libzimg (zscale)'
+        operators.append({'id': op, 'available': available, 'device': device, 'note': note})
+    caps = {'operators': operators, 'vulkan': vulkan}
+    caps['auto_default'] = resolve_tonemap_default('auto', caps)
+    return caps
+
+
+def resolve_tonemap_default(configured, caps=None):
+    """The operator `auto` (or an unavailable explicit choice) falls back to.
+
+    bt2390 when it runs on a real GPU, otherwise hable, which is the best of the CPU
+    curves and runs everywhere libzimg does. None when the build cannot tone map.
+    """
+    caps = caps or tonemap_capabilities()
+    available = [o['id'] for o in caps['operators'] if o['available']]
+    if configured and configured != 'auto' and configured in available:
+        return configured
+    if 'bt2390' in available and caps.get('vulkan') == 'hardware':
+        return 'bt2390'
+    for op in ('hable', 'bt2390', 'spline', 'bt2446a', 'mobius', 'reinhard'):
+        if op in available:
+            return op
+    return None
+
+
+def sdr_failure_message(failure_reason):
+    """What the editor is shown when an SDR copy could not be made."""
+    if failure_reason == 'corruption':
+        return 'The video could not be read'
+    return 'No encoder could make the SDR copy; see the server log'
+
+
+# What the SDR copy is tagged as, so players read it as ordinary BT.709 video.
+_SDR_OUTPUT_ARGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709']
+
+
+def create_sdr_video(video_path, out_path, operator, use_gpu=False, encoder_preference='auto', data_path=None, assume_pq=False):
+    """Tone map an HDR video into an SDR copy at its own resolution.
+
+    Encodes with the same encoder chain as the transcodes, so the result plays wherever
+    they do. Returns (success, failure_reason) exactly like transcode_video_quality.
+    """
+    input_args, vf = tonemap_filter(operator, assume_pq)
+    # The encoders want even dimensions; a source with an odd edge loses one line.
+    vf += ',scale=trunc(iw/2)*2:trunc(ih/2)*2'
+    return transcode_video_quality(
+        video_path, out_path, None, use_gpu, None, encoder_preference, data_path=data_path,
+        video_filter=vf, input_args=input_args, output_args=_SDR_OUTPUT_ARGS, label=f'SDR ({operator})',
+    )
+
+
+def render_tonemap_preview(video_path, seconds, operator, out_dir, width=1280, zoom=(900, 540), assume_pq=False):
+    """One frame of video_path at `seconds`, tone mapped with `operator` (or left as
+    stored when operator is None), as two WebP files in out_dir: the frame scaled to
+    `width`, and a centre crop of `zoom` size at native pixels. Returns their paths, or
+    None when ffmpeg failed.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    name = f"{seconds:.1f}-{operator or 'as_stored'}" + (f"-{tonemap_device(operator)}" if operator else '')
+    tile, crop = out_dir / f"{name}.webp", out_dir / f"{name}-zoom.webp"
+    if tile.exists() and crop.exists():
+        return tile, crop
+    if operator:
+        input_args, vf = tonemap_filter(operator, assume_pq)
+    else:
+        input_args, vf = [], 'format=yuv420p'
+    zw, zh = zoom
+    graph = (f"[0:v]{vf},split[a][b];[a]scale={width}:-2[tile];"
+             f"[b]crop=min(iw\\,{zw}):min(ih\\,{zh}):(iw-ow)/2:(ih-oh)/2[zoom]")
+    tile_tmp, crop_tmp = out_dir / f"{name}.tmp.webp", out_dir / f"{name}-zoom.tmp.webp"
+    # -threads 1: FFmpeg 6.1.0 aborts on an assertion when a frame limit stops a
+    # frame-threaded decode of a stream-copied file (which is what a crop is); a
+    # single frame does not need the threads anyway.
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-threads', '1', *input_args, '-ss', f'{seconds:.3f}', '-i', str(video_path),
+           '-filter_complex', graph,
+           '-map', '[tile]', '-frames:v', '1', '-c:v', 'libwebp', '-quality', '85', str(tile_tmp),
+           '-map', '[zoom]', '-frames:v', '1', '-c:v', 'libwebp', '-quality', '85', str(crop_tmp)]
+    # One short line per tile; the full command only matters when it fails.
+    logger.debug(f"Rendering tone map preview {name} for {Path(video_path).name}")
+    try:
+        result = sp.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, sp.SubprocessError) as ex:
+        logger.warning(f"Tone map preview failed for {video_path} at {seconds}s ({operator}): {ex}\n$ {' '.join(cmd)}")
+        result = None
+    if result is None or result.returncode != 0 or not tile_tmp.exists() or not crop_tmp.exists():
+        if result is not None:
+            logger.warning(f"Tone map preview failed for {video_path} at {seconds}s ({operator}): "
+                           f"{result.stderr.strip()[-400:]}\n$ {' '.join(cmd)}")
+        tile_tmp.unlink(missing_ok=True)
+        crop_tmp.unlink(missing_ok=True)
+        return None
+    try:
+        os.replace(tile_tmp, tile)
+        os.replace(crop_tmp, crop)
+    except OSError as ex:
+        # A save that resets the derived files removes the preview directory; the
+        # request that lost the race simply fails and the modal retries.
+        logger.warning(f"Tone map preview for {video_path} at {seconds}s ({operator}) could not be kept: {ex}")
+        tile_tmp.unlink(missing_ok=True)
+        crop_tmp.unlink(missing_ok=True)
+        return None
+    return tile, crop
+
+
 def transcode_video(video_path, out_path):
     s = time.time()
     logger.debug(f"Transcoding video")
@@ -979,9 +1367,17 @@ TRANSCODE_BITRATE_CAPS = {
     480:  (('2500k', '5M'),  ('4M', '8M')),
 }
 
-def _build_transcode_command(video_path, out_path, height, encoder, input_decoder=None, framerate=None):
-    """Build an ffmpeg command for transcoding with the given encoder."""
+def _build_transcode_command(video_path, out_path, height, encoder, input_decoder=None, framerate=None,
+                             video_filter=None, input_args=None, output_args=None):
+    """Build an ffmpeg command for transcoding with the given encoder.
+
+    height is the target height to scale to, or None to keep the source size, in
+    which case video_filter (e.g. a tone map chain) does any conversion. input_args
+    go before -i (hardware device setup); output_args before the output path.
+    """
     cmd = ['ffmpeg', '-v', 'warning', '-stats', '-y']
+    if input_args:
+        cmd.extend(input_args)
     if input_decoder:
         cmd.extend(['-c:v', input_decoder])
     cmd.append('-i')
@@ -997,7 +1393,9 @@ def _build_transcode_command(video_path, out_path, height, encoder, input_decode
         maxrate, bufsize = TRANSCODE_BITRATE_CAPS[height][1 if high_fps else 0]
         cmd.extend(['-maxrate', maxrate, '-bufsize', bufsize])
     
-    cmd.extend(['-vf', f'scale=-2:{height}'])
+    cmd.extend(['-vf', video_filter or f'scale=-2:{height}'])
+    if output_args:
+        cmd.extend(output_args)
     cmd.extend(['-c:a', encoder['audio_codec'], '-b:a', encoder.get('audio_bitrate', '128k')])
     # The index goes at the front, so the player can start without first fetching the
     # end of the file, and again every time it switches quality.
@@ -1006,7 +1404,8 @@ def _build_transcode_command(video_path, out_path, height, encoder, input_decode
     
     return cmd
 
-def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout_seconds=None, encoder_preference='auto', data_path=None):
+def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout_seconds=None, encoder_preference='auto', data_path=None,
+                            video_filter=None, input_args=None, output_args=None, label=None):
     """
     Transcode a video to a specific height (e.g., 720, 1080) while maintaining aspect ratio.
     
@@ -1022,7 +1421,9 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
     Args:
         video_path: Path to the source video
         out_path: Path for the transcoded output
-        height: Target height in pixels (e.g., 720, 1080)
+        height: Target height in pixels (e.g., 720, 1080), or None to keep the source size
+        video_filter, input_args, output_args: see _build_transcode_command
+        label: what to call the output in logs when height is None
         use_gpu: Whether to use GPU acceleration (NVENC if available)
         timeout_seconds: Maximum time allowed for encoding (default: calculated based on video duration)
     
@@ -1034,6 +1435,7 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
     """
     global _working_encoder_cache
     s = time.time()
+    target = f'{height}p' if height else (label or 'source resolution')
     
     # Validate the source video file before attempting transcoding
     # This catches corrupt files early instead of trying all encoders
@@ -1079,8 +1481,9 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
         logger.debug(f"Using cached {mode.upper()} encoder: {encoder['name']}")
 
         # Build ffmpeg command using the cached encoder
-        logger.info(f"Transcoding video to {height}p using {encoder['name']}")
-        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate)
+        logger.info(f"Transcoding video to {target} using {encoder['name']}")
+        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate,
+                                       video_filter=video_filter, input_args=input_args, output_args=output_args)
 
         logger.debug(f"$: {' '.join(cmd)}")
 
@@ -1089,7 +1492,7 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
             if result.returncode == 0:
                 tmp_path.rename(out_path)
                 e = time.time()
-                logger.info(f'Transcoded {str(out_path)} to {height}p in {e-s:.2f}s')
+                logger.info(f'Transcoded {str(out_path)} to {target} in {e-s:.2f}s')
                 return (True, None)
             else:
                 # Cached encoder failed - clear cache and fall through to try all encoders
@@ -1226,7 +1629,8 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
         logger.debug(f"Trying {encoder['name']}...")
 
         # Build ffmpeg command targeting the temp path
-        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate)
+        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate,
+                                       video_filter=video_filter, input_args=input_args, output_args=output_args)
 
         logger.debug(f"$: {' '.join(cmd)}")
 
@@ -1238,7 +1642,7 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
                 logger.info(f"✓ {encoder['name']} works! Using it for all transcodes this session.")
                 _working_encoder_cache[mode] = encoder
                 e = time.time()
-                logger.info(f'Transcoded {str(out_path)} to {height}p in {e-s:.2f}s')
+                logger.info(f'Transcoded {str(out_path)} to {target} in {e-s:.2f}s')
                 return (True, None)
             else:
                 logger.warning(f"✗ {encoder['name']} failed with exit code {result.returncode}")

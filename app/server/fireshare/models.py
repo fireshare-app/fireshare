@@ -3,6 +3,7 @@ import uuid as uuid_lib
 from datetime import datetime
 from flask_login import UserMixin
 from . import db
+from .constants import TONEMAP_OPERATORS
 from . import permissions as perms
 from . import media_codecs
 
@@ -223,6 +224,13 @@ class VideoInfo(db.Model):
     start_time    = db.Column(db.Float, nullable=True)
     end_time      = db.Column(db.Float, nullable=True)
     has_crop      = db.Column(db.Boolean, default=False)
+    # HDR sources. is_hdr is None until the stored stream tags have been checked.
+    # tonemap is the operator the SDR copy is made with (None: none wanted), has_sdr
+    # says the copy is in place, and sdr_error keeps the last failure for the editor.
+    is_hdr        = db.Column(db.Boolean, nullable=True)
+    tonemap       = db.Column(db.String(16), nullable=True)
+    has_sdr       = db.Column(db.Boolean, default=False)
+    sdr_error     = db.Column(db.String(512), nullable=True)
     password_hash = db.Column(db.String(256), nullable=True)
 
     video       = db.relationship("Video", back_populates="info", uselist=False, lazy="joined")
@@ -232,6 +240,23 @@ class VideoInfo(db.Model):
         info = json.loads(self.info) if self.info else None
         vcodec = [i for i in info if i["codec_type"] == "video"][0] if info else None
         return vcodec
+
+    @property
+    def tonemap_operator(self):
+        """The operator the SDR copy is made with, or None. The column also records an
+        explicit 'none' when the tone map was removed, which only the scan cares about."""
+        return self.tonemap if self.tonemap in TONEMAP_OPERATORS else None
+
+    @property
+    def hdr_format(self):
+        """'pq' or 'hlg' for an HDR source (an untagged one is taken as PQ), else None."""
+        if not self.is_hdr:
+            return None
+        try:
+            transfer = (self.vcodec or {}).get('color_transfer') or ''
+        except (IndexError, TypeError, ValueError):
+            transfer = ''
+        return 'hlg' if transfer.lower() == 'arib-std-b67' else 'pq'
 
     @property
     def framerate(self):
@@ -269,17 +294,33 @@ class VideoInfo(db.Model):
             "start_time": self.start_time,
             "end_time": self.end_time,
             "has_crop": self.has_crop or False,
+            "is_hdr": bool(self.is_hdr),
+            "hdr_format": self.hdr_format,
+            "tonemap": self.tonemap_operator,
+            "has_sdr": self.has_sdr or False,
+            "sdr_error": self.sdr_error,
             "has_password": bool(self.password_hash),
         }
 
     def __repr__(self):
         return "<VideoInfo {} {}>".format(self.video_id, self.title)
 
+# Public ids for custom games start here. steamgriddb_id doubles as the public
+# game id everywhere (asset directory, /games/<id>, nginx alias), so a game that
+# never came from SteamGridDB still needs one. SteamGridDB ids are a few million
+# and climb slowly, so allocating ours at a billion plus the row id keeps the two
+# namespaces apart without touching any of those routes.
+CUSTOM_GAME_ID_BASE = 1_000_000_000
+
+
 class GameMetadata(db.Model):
     __tablename__ = "game_metadata"
 
     id                  = db.Column(db.Integer, primary_key=True)
     steamgriddb_id      = db.Column(db.Integer, index=True, nullable=True)
+    # True for a game a curator added by hand with uploaded artwork. Its
+    # steamgriddb_id is CUSTOM_GAME_ID_BASE + id, never a real SteamGridDB id.
+    is_custom           = db.Column(db.Boolean, nullable=False, default=False, server_default='0')
     name                = db.Column(db.String(256), index=True, nullable=False)
     release_date        = db.Column(db.String(64), nullable=True)
     hero_url            = db.Column(db.String(2048), nullable=True)
@@ -312,6 +353,7 @@ class GameMetadata(db.Model):
         return {
             "id": self.id,
             "steamgriddb_id": self.steamgriddb_id,
+            "custom": bool(self.is_custom),
             "name": self.name,
             "release_date": self.release_date,
             "hero_url": hero_url,

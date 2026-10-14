@@ -19,7 +19,7 @@ individual permissions.
 | `edit_any` | Edit any media, including content with no uploader |
 | `delete_any` | Delete any media, including content with no uploader |
 | `manage_tags` | Create, rename, delete, and assign tags |
-| `manage_games` | Manage game metadata, artwork, and folder rules |
+| `manage_games` | Manage game metadata and artwork, add custom games, and manage folder rules |
 | `transcode` | Start and cancel transcoding jobs |
 | `manage_library` | Use the bulk File Manager and trigger library scans |
 

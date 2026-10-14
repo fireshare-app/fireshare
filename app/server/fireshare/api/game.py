@@ -8,11 +8,12 @@ from flask import current_app, jsonify, request, Response, send_file
 from flask_login import login_required, current_user
 
 from .. import db, logger
-from ..models import Video, VideoInfo, VideoView, GameMetadata, VideoGameLink, Image, ImageInfo, ImageGameLink, ImageView
+from ..models import Video, VideoInfo, VideoView, GameMetadata, VideoGameLink, Image, ImageInfo, ImageGameLink, ImageView, CUSTOM_GAME_ID_BASE
 from ..steamgrid import SteamGridDBClient
 from .. import permissions as P
 from . import api
 from .decorators import require_perm
+from .custom_games import search_custom_games, find_custom_game, is_custom_game_id
 from .helpers import (
     cancel_pending_transcode_jobs,
     delete_video_files,
@@ -59,19 +60,28 @@ def search_steamgrid():
     if not query:
         return Response(status=400, response='Query parameter is required.')
 
+    # A curator's own games come first. They are the ones SteamGridDB does not
+    # have yet, and they are still searchable when no API key is configured.
+    custom = search_custom_games(query)
+
     api_key = get_steamgriddb_api_key()
     if not api_key:
-        return Response(status=503, response='SteamGridDB API key not configured.')
+        return jsonify(custom)
 
     client = SteamGridDBClient(api_key)
 
     results = client.search_games(query)
-    return jsonify(results)
+    return jsonify(custom + results)
 
 
 @api.route('/api/steamgrid/game/<int:game_id>/assets', methods=["GET"])
 @login_required
 def get_steamgrid_assets(game_id):
+    custom = find_custom_game(game_id)
+    if custom:
+        data = game_json_with_assets(custom)
+        return jsonify({k: data.get(k) for k in ('hero_url', 'logo_url', 'icon_url')})
+
     api_key = get_steamgriddb_api_key()
     if not api_key:
         return Response(status=503, response='SteamGridDB API key not configured.')
@@ -85,6 +95,10 @@ def get_steamgrid_assets(game_id):
 @api.route('/api/steamgrid/game/<int:game_id>/assets/options', methods=["GET"])
 @login_required
 def get_steamgrid_asset_options(game_id):
+    if is_custom_game_id(game_id):
+        # Custom artwork is uploaded, not picked from a pool.
+        return jsonify({'heroes': [], 'logos': [], 'icons': []})
+
     api_key = get_steamgriddb_api_key()
     if not api_key:
         return Response(status=503, response='SteamGridDB API key not configured.')
@@ -189,10 +203,12 @@ def get_games():
     )
 
     if viewer_sees_private():
-        # Show games that have at least one linked video OR image
+        # Show games that have at least one linked video OR image. Custom games
+        # are always listed: someone just added one by hand, and it has to be
+        # visible to link media to, and to edit or delete.
         games = (
             db.session.query(GameMetadata)
-            .filter(or_(has_video, has_image))
+            .filter(or_(has_video, has_image, GameMetadata.is_custom.is_(True)))
             .distinct()
             .order_by(GameMetadata.name)
             .all()
@@ -253,6 +269,11 @@ def create_game():
             existing_game.updated_at = datetime.utcnow()
             db.session.commit()
         return jsonify(existing_game.json()), 200
+
+    if is_custom_game_id(data['steamgriddb_id']):
+        # The id is in the custom range but no such game exists any more, so there
+        # is nothing upstream to fetch it from.
+        return Response(status=404, response='Custom game not found.')
 
     # Get API key and initialize client
     api_key = get_steamgriddb_api_key()
@@ -400,7 +421,10 @@ def get_game_asset(steamgriddb_id, filename):
             if found:
                 asset_path = found
 
-    # If asset still doesn't exist, try to re-download from SteamGridDB
+    # If asset still doesn't exist, try to re-download from SteamGridDB. A custom
+    # game's art only ever existed here, so there is nothing to fetch for it.
+    if not asset_path.exists() and is_custom_game_id(steamgriddb_id):
+        return Response(status=404, response='Asset not found.')
     if not asset_path.exists():
         logger.warning(f"{filename} missing for game {steamgriddb_id}")
         api_key = get_steamgriddb_api_key()

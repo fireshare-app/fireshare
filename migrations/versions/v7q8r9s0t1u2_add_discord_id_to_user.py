@@ -1,7 +1,7 @@
 """add discord_id to user
 
-Revision ID: t5o6p7q8r9s0
-Revises: s4n5o6p7q8r9
+Revision ID: v7q8r9s0t1u2
+Revises: u6p7q8r9s0t1
 Create Date: 2026-10-01 10:00:00.000000
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = 't5o6p7q8r9s0'
-down_revision = 's4n5o6p7q8r9'
+revision = 'v7q8r9s0t1u2'
+down_revision = 'u6p7q8r9s0t1'
 branch_labels = None
 depends_on = None
 

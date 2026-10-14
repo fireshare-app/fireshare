@@ -5,18 +5,16 @@ import { createPlayer, useMedia, Poster } from '@videojs/react'
 import { Video, videoFeatures } from '@videojs/react/video'
 import CustomVideoSkin from './CustomVideoSkin'
 import usePlayableSources from './usePlayableSources'
+import { rememberSourceChoice } from '../../common/utils'
 
 // Tolerance threshold for checking if player is already at the desired start time (in seconds)
 const SEEK_TOLERANCE_SECONDS = 0.5
 
-// How long to wait while buffering before switching to a lower quality source (in ms)
-const BUFFER_STALL_TIMEOUT_MS = 5000
+// Playback steps down to a lower quality once it has spent this long buffering (in ms)...
+const BUFFER_STALL_TIMEOUT_MS = 7000
 
-// Number of buffering events within the window that triggers a quality downgrade
-const BUFFER_COUNT_THRESHOLD = 4
-
-// Sliding window duration for counting buffering events (in ms)
-const BUFFER_COUNT_WINDOW_MS = 30000
+// ...within this window, in one stall or several short ones (in ms)
+const BUFFER_STALL_WINDOW_MS = 30000
 
 // Create the Video.js 10 player instance (module-level singleton)
 const Player = createPlayer({ features: videoFeatures })
@@ -145,7 +143,8 @@ function PlayerEffects({ sources, onSourceChange, onTimeUpdate, onReady, startTi
     if (!media || !sources || sources.length <= 1) return
 
     let bufferStallTimer = null
-    let bufferTimestamps = []
+    let stalls = [] // [start, end] of each stall that ended inside the window
+    let stallStart = null
     let isSourceTransitioning = false
     let sourceTransitionTimer = null
     let isSeeking = false
@@ -166,8 +165,12 @@ function PlayerEffects({ sources, onSourceChange, onTimeUpdate, onReady, startTi
 
     const switchToNextSource = () => {
       onSourceChange((prev) => {
-        if (prev + 1 < sources.length) return prev + 1
-        return prev
+        // A stall calls for a smaller file. A tone-mapped video lists its source twice,
+        // as the SDR copy and the HDR original, and those are the same size, so when
+        // one of them stalls the other is passed over for the first transcode.
+        let next = prev + 1
+        while (next < sources.length && sources[prev]?.variant && sources[next]?.variant) next += 1
+        return next < sources.length ? next : prev
       })
     }
 
@@ -185,9 +188,25 @@ function PlayerEffects({ sources, onSourceChange, onTimeUpdate, onReady, startTi
       }
     }
 
+    // Buffering time spent inside the window, not counting a stall still under way.
+    const stalledTime = (now) => {
+      const windowStart = now - BUFFER_STALL_WINDOW_MS
+      stalls = stalls.filter(([, end]) => end > windowStart)
+      return stalls.reduce((sum, [start, end]) => sum + (end - Math.max(start, windowStart)), 0)
+    }
+
+    const endStall = () => {
+      clearStallTimer()
+      if (stallStart !== null) {
+        stalls.push([stallStart, Date.now()])
+        stallStart = null
+      }
+    }
+
     const handleLoadStart = () => {
       isSourceTransitioning = true
-      bufferTimestamps = []
+      stalls = []
+      stallStart = null
       clearStallTimer()
       clearTransitionTimer()
       sourceTransitionTimer = setTimeout(() => {
@@ -202,7 +221,7 @@ function PlayerEffects({ sources, onSourceChange, onTimeUpdate, onReady, startTi
 
     const handleSeeking = () => {
       isSeeking = true
-      clearStallTimer()
+      endStall()
     }
 
     const handleSeeked = () => {
@@ -215,28 +234,27 @@ function PlayerEffects({ sources, onSourceChange, onTimeUpdate, onReady, startTi
       // browser loads that range — that's not real network stalling and
       // shouldn't count toward a quality downgrade.
       if (isSourceTransitioning || isSeeking) return
+      if (stallStart !== null) return // this stall is already being timed
 
+      // Buffering is measured in time, not events: on a slow connection the browser
+      // flaps between waiting and playing several times a second, and each of those
+      // moments is a fraction of a second, not a stall of its own. The step down comes
+      // once the stalls in the window add up to the budget.
       const now = Date.now()
-      bufferTimestamps.push(now)
-      bufferTimestamps = bufferTimestamps.filter((t) => now - t < BUFFER_COUNT_WINDOW_MS)
-
-      if (bufferTimestamps.length >= BUFFER_COUNT_THRESHOLD) {
-        bufferTimestamps = []
-        clearStallTimer()
-        switchToNextSource()
-        return
-      }
-
+      stallStart = now
+      const remaining = Math.max(BUFFER_STALL_TIMEOUT_MS - stalledTime(now), 0)
       clearStallTimer()
       bufferStallTimer = setTimeout(() => {
+        bufferStallTimer = null
         if (media.paused || media.readyState < 3) {
-          bufferTimestamps = []
+          stalls = []
+          stallStart = null
           switchToNextSource()
         }
-      }, BUFFER_STALL_TIMEOUT_MS)
+      }, remaining)
     }
 
-    const handlePlayingOrPause = () => clearStallTimer()
+    const handlePlayingOrPause = () => endStall()
 
     media.addEventListener('error', handleError)
     media.addEventListener('loadstart', handleLoadStart)
@@ -435,7 +453,11 @@ const PlayerWithSources = ({
         style={containerStyle}
         sources={sources}
         currentSourceIndex={currentSourceIndex}
-        onQualitySelect={setCurrentSourceIndex}
+        onQualitySelect={(index) => {
+          // A pick from the menu is the viewer's word on HDR versus SDR for this device.
+          rememberSourceChoice(sources?.[index])
+          setCurrentSourceIndex(index)
+        }}
       >
         <Video src={activeSrc} autoPlay={autoplay} playsInline={playsinline} preload="auto" />
         {poster && <Poster src={poster} alt="" />}

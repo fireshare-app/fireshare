@@ -38,7 +38,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfreetype6-dev \
     libmp3lame-dev \
     libwebp-dev \
-    && rm -rf /var/lib/apt/lists/*
+    libzimg-dev \
+    libvulkan-dev \
+    glslang-dev \
+    spirv-tools \
+    liblcms2-dev \
+    python3 \
+    python3-pip \
+    ninja-build \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir 'meson>=1.0'
 
 # Build SVT-AV1 from source, V1.8.0 for FFmpeg 6.1
 RUN git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git && \
@@ -46,6 +55,23 @@ RUN git clone --depth 1 --branch v1.8.0 https://gitlab.com/AOMediaCodec/SVT-AV1.
     cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc) && \
     make install
+
+# Vulkan headers for FFmpeg 6.1's Vulkan code, which wants >= 1.3.255 (jammy ships 1.3.204).
+# Header-only; the loader stays jammy's libvulkan1.
+RUN git clone --depth 1 --branch v1.3.255 https://github.com/KhronosGroup/Vulkan-Headers.git && \
+    cmake -S Vulkan-Headers -B Vulkan-Headers/build -DCMAKE_INSTALL_PREFIX=/usr/local && \
+    cmake --install Vulkan-Headers/build && rm -rf Vulkan-Headers
+
+# libplacebo, for the bt.2390 HDR -> SDR tone map. Built from source because jammy's
+# 4.192 does not compile against FFmpeg 6.1's filter; v6.338 is the series 6.1 was
+# developed against. jammy's static glslang is linked in, so it needs no runtime package.
+RUN git clone --depth 1 --recursive --branch v6.338.2 https://github.com/haasn/libplacebo.git && \
+    cd libplacebo && \
+    meson setup build --prefix=/usr/local --libdir=lib --buildtype=release \
+        -Dvulkan=enabled -Dglslang=enabled -Dshaderc=disabled -Dlcms=enabled \
+        -Dopengl=disabled -Dd3d11=disabled -Ddemos=false -Dtests=false && \
+    ninja -C build && ninja -C build install && ldconfig && \
+    cd .. && rm -rf libplacebo
 
 # Install NVIDIA codec headers for NVENC support
 RUN git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-headers.git && \
@@ -57,9 +83,10 @@ RUN git clone --depth 1 --branch n12.1.14.0 https://github.com/FFmpeg/nv-codec-h
 RUN wget -q https://ffmpeg.org/releases/ffmpeg-6.1.tar.xz && \
     tar -xf ffmpeg-6.1.tar.xz
 
-# Configure FFmpeg with NVENC and all necessary encoders
+# Configure FFmpeg with NVENC and all necessary encoders. libzimg provides zscale, which
+# the HDR -> SDR tone map needs to get frames into linear light.
 RUN cd ffmpeg-6.1 && \
-    ./configure \
+    PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig ./configure \
         --prefix=/usr/local \
         --enable-gpl \
         --enable-version3 \
@@ -77,6 +104,9 @@ RUN cd ffmpeg-6.1 && \
         --enable-libfreetype \
         --enable-libsvtav1 \
         --enable-libwebp \
+        --enable-libzimg \
+        --enable-libplacebo \
+        --enable-vulkan \
         --disable-debug \
         --disable-doc
 
@@ -86,8 +116,9 @@ RUN cd ffmpeg-6.1 && \
     make install && \
     ldconfig
 
-# Verify FFmpeg was built correctly
+# Verify FFmpeg was built correctly, with the tone map filters
 RUN ffmpeg -version && \
+    ffmpeg -hide_banner -filters | grep -E ' (zscale|tonemap|libplacebo)[ ]' && \
     ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(nvenc|264|265|vpx|aom|svt)" | head -20
 
 # Python build stage — compiles Python 3.14 from source; works on all architectures
@@ -121,7 +152,10 @@ COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
 COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/ffprobe
 COPY --from=ffmpeg-builder /usr/local/lib/lib* /usr/local/lib/
 
-# Install runtime dependencies
+# Install runtime dependencies. libglvnd0, libx11-6 and libxext6 are what the NVIDIA
+# Vulkan driver (libGLX_nvidia.so.0, mounted by the container toolkit for the
+# "graphics" capability) links against; without them the Vulkan loader skips the GPU
+# and libplacebo silently falls back to Mesa's software device.
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
     nginx-extras supervisor \
@@ -134,6 +168,9 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     libx264-163 libx265-199 libvpx7 libaom3 libdav1d5 \
     libopus0 libvorbis0a libvorbisenc2 \
     libass9 libfreetype6 libmp3lame0 libwebp7 libwebpmux3 \
+    libzimg2 \
+    liblcms2-2 libvulkan1 mesa-vulkan-drivers \
+    libglvnd0 libegl1 libx11-6 libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=python-source /opt/python3.14 /opt/python3.14
@@ -155,6 +192,21 @@ RUN ln -sf /usr/local/bin/ffmpeg /usr/bin/ffmpeg && \
     ffmpeg -version && \
     echo "Available encoders:" && \
     ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "(nvenc|libaom|libvpx|libx264)" || true
+
+# The NVIDIA Container Toolkit is meant to mount two manifests alongside the driver
+# libraries for the "graphics" capability: the Vulkan ICD manifest, without which the
+# Vulkan loader never looks at the driver, and libglvnd's EGL vendor manifest, without
+# which the driver aborts its own start-up while scanning for EGL vendors (it opens
+# neither /dev/nvidiactl nor the GPU and hands the loader no vkCreateInstance). Some
+# hosts, Unraid's driver plugin among them, mount the libraries and neither manifest,
+# so libplacebo silently ran bt.2390 on Mesa's software device. Shipping both covers
+# that: they only name libraries the toolkit mounts, and on a host without the GPU the
+# loader skips the Vulkan entry and carries on.
+RUN mkdir -p /etc/vulkan/icd.d /usr/share/glvnd/egl_vendor.d && printf '%s\n' \
+    '{ "file_format_version": "1.0.0", "ICD": { "library_path": "libGLX_nvidia.so.0", "api_version": "1.3.204" } }' \
+    > /etc/vulkan/icd.d/nvidia_icd.json && printf '%s\n' \
+    '{ "file_format_version": "1.0.0", "ICD": { "library_path": "libEGL_nvidia.so.0" } }' \
+    > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
 RUN adduser --disabled-password --gecos '' nginx
 RUN ln -sf /dev/stdout /var/log/nginx/access.log \
@@ -188,10 +240,12 @@ ENV ANALYTICS_TRACKING_SCRIPT=""
 ENV TZ=UTC
 ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64:/usr/local/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 # The NVIDIA Container Toolkit only mounts the NVENC/NVDEC libraries when the
-# "video" driver capability is requested. The CUDA base image defaults to
-# "compute,utility", which leaves ffmpeg without libnvidia-encode.so.1 and
-# silently forces CPU transcoding. Users may still override this at run time.
-ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+# "video" driver capability is requested, and the Vulkan driver (which lets the
+# bt.2390 tone map run on the GPU instead of Mesa's software Vulkan) only with
+# "graphics". The CUDA base image defaults to "compute,utility", which leaves
+# ffmpeg without libnvidia-encode.so.1 and silently forces CPU transcoding.
+# Users may still override this at run time.
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics
 ENV PATH=/opt/python3.14/bin:/usr/local/bin:$PATH
 
 EXPOSE 80

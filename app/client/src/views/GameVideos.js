@@ -33,6 +33,7 @@ import GameVideosHeader from '../components/game/GameVideosHeader'
 import GameSearch from '../components/game/GameSearch'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import EditGameAssetsModal from '../components/modal/EditGameAssetsModal'
+import CustomGameModal from '../components/modal/CustomGameModal'
 import SnackbarAlert from '../components/alert/SnackbarAlert'
 import { SORT_OPTIONS, SORT_SELECT_WIDTH } from '../common/constants'
 import { sortSelectTheme as selectSortTheme } from '../common/reactSelectThemes'
@@ -239,6 +240,12 @@ const GameVideos = ({ cardSize, authenticated, searchText }) => {
         icon_url: getGameAssetUrl(prev.steamgriddb_id, 'icon_1', bust),
       }
     })
+  }
+
+  const handleCustomGameSaved = (saved) => {
+    setGame((prev) => (prev ? { ...prev, name: saved.name, release_date: saved.release_date } : prev))
+    handleAssetSaved()
+    setAlert({ open: true, type: 'success', message: `Updated ${saved.name}` })
   }
 
   // ── Sorting ───────────────────────────────────────────────────────────────
@@ -665,13 +672,19 @@ const GameVideos = ({ cardSize, authenticated, searchText }) => {
         </DialogActions>
       </Dialog>
 
-      {/* Cover Art Modal */}
+      {/* Cover Art Modal (SteamGridDB games pick from a pool, custom games upload) */}
       <EditGameAssetsModal
         game={game}
-        open={editingAssets}
+        open={editingAssets && !game?.custom}
         onClose={() => setEditingAssets(false)}
         onSaved={handleAssetSaved}
         bannerOnly
+      />
+      <CustomGameModal
+        game={game?.custom ? game : null}
+        open={editingAssets && Boolean(game?.custom)}
+        onClose={() => setEditingAssets(false)}
+        onSaved={handleCustomGameSaved}
       />
     </>
   )
