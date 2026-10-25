@@ -16,6 +16,8 @@ const BUFFER_STALL_TIMEOUT_MS = 7000
 // ...within this window, in one stall or several short ones (in ms)
 const BUFFER_STALL_WINDOW_MS = 30000
 
+const VOLUME_STORAGE_KEY = 'user_volume'
+
 // Create the Video.js 10 player instance (module-level singleton)
 const Player = createPlayer({ features: videoFeatures })
 
@@ -32,6 +34,21 @@ function PlayerEffects({ sources, onSourceChange, onTimeUpdate, onReady, startTi
     onTimeUpdateRef.current = onTimeUpdate
     onReadyRef.current = onReady
   }, [onTimeUpdate, onReady])
+
+  useEffect(() => {
+    if (!media) return
+
+    const savedVolume = localStorage.getItem(VOLUME_STORAGE_KEY)
+    const parsedVolume = savedVolume === null || savedVolume.trim() === '' ? 1 : Number(savedVolume)
+    media.volume = Number.isFinite(parsedVolume) ? Math.min(Math.max(parsedVolume, 0), 1) : 1
+
+    const handleVolumeChange = () => {
+      localStorage.setItem(VOLUME_STORAGE_KEY, String(media.volume))
+    }
+
+    media.addEventListener('volumechange', handleVolumeChange)
+    return () => media.removeEventListener('volumechange', handleVolumeChange)
+  }, [media])
 
   useEffect(() => {
     if (onTimeUpdateRef.current) {
