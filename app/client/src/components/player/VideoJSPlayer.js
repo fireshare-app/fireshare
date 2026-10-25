@@ -17,6 +17,8 @@ const BUFFER_STALL_TIMEOUT_MS = 7000
 const BUFFER_STALL_WINDOW_MS = 30000
 
 const VOLUME_STORAGE_KEY = 'user_volume'
+const LEGACY_VOLUME_STORAGE_KEY = 'fireshare_volume'
+const MUTED_STORAGE_KEY = 'user_muted'
 
 // Create the Video.js 10 player instance (module-level singleton)
 const Player = createPlayer({ features: videoFeatures })
@@ -38,17 +40,22 @@ function PlayerEffects({ sources, onSourceChange, onTimeUpdate, onReady, startTi
   useEffect(() => {
     if (!media) return
 
-    const savedVolume = localStorage.getItem(VOLUME_STORAGE_KEY)
+    const savedVolume = localStorage.getItem(VOLUME_STORAGE_KEY) ?? localStorage.getItem(LEGACY_VOLUME_STORAGE_KEY)
     const parsedVolume = savedVolume === null || savedVolume.trim() === '' ? 1 : Number(savedVolume)
-    media.volume = Number.isFinite(parsedVolume) ? Math.min(Math.max(parsedVolume, 0), 1) : 1
+    const volume = Number.isFinite(parsedVolume) ? Math.min(Math.max(parsedVolume, 0), 1) : 1
+    const savedMuted = localStorage.getItem(MUTED_STORAGE_KEY) === 'true'
 
     const handleVolumeChange = () => {
       localStorage.setItem(VOLUME_STORAGE_KEY, String(media.volume))
+      localStorage.setItem(MUTED_STORAGE_KEY, String(media.muted))
     }
 
     media.addEventListener('volumechange', handleVolumeChange)
+    store.setVolume(volume)
+    if (media.muted !== savedMuted) store.toggleMuted()
+    handleVolumeChange()
     return () => media.removeEventListener('volumechange', handleVolumeChange)
-  }, [media])
+  }, [media, store])
 
   useEffect(() => {
     if (onTimeUpdateRef.current) {
