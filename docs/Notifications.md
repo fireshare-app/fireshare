@@ -47,25 +47,42 @@ Enter valid JSON into the "Generic Webhook JSON Payload" field on the Integratio
 }
 ```
 
-#### Including a Link to the Video
+#### Placeholders
 
-You can include a direct link to the newly uploaded video in your notification by using the `[[video_url]]` placeholder anywhere in your JSON payload.
+You can include details of the new video in your notification with placeholders. Put them anywhere inside a string in your JSON payload, wrapped in double square brackets, and Fireshare replaces each one with the video's value before sending.
 
-**Example payload with video link:**
+| Placeholder | Replaced with |
+| --- | --- |
+| `[[video_url]]` | A direct link to the video |
+| `[[video_title]]` | The video's title |
+| `[[video_description]]` | The video's description |
+| `[[uploader_name]]` | The display name of the user who uploaded the video, or their username if they have no display name |
+| `[[game_name]]` | The game the video is linked to |
+| `[[tags]]` | The video's tags, separated by commas |
+
+A placeholder with no value for the video, such as a video with no game or no description yet, is replaced with an empty string. Quotes and other special characters in the values are escaped, so they won't break your JSON.
+
+Videos found by a library scan are credited to the admin account, so `[[uploader_name]]` is that admin's name.
+
+**Example payload with placeholders:**
 ```json
 {
-    "Title": "Fireshare",
-    "message": "New Video Uploaded to Fireshare [[video_url]]"
+    "Title": "[[video_title]]",
+    "message": "[[uploader_name]] uploaded a new [[game_name]] clip: [[video_url]]",
+    "tags": "[[tags]]"
 }
 ```
 
 **What Fireshare will send to your service:**
 ```json
 {
-    "Title": "Fireshare",
-    "message": "New Video Uploaded to Fireshare https://yourdomain.com/w/c415d34530d15b2892fa4a4e037b6c05"
+    "Title": "That \"impossible\" flank",
+    "message": "Shane uploaded a new Apex Legends clip: https://yourdomain.com/w/c415d34530d15b2892fa4a4e037b6c05",
+    "tags": "Clutch, Funny"
 }
 ```
+
+The **Test Webhook** button on the Integrations page fills the placeholders with sample values, so you can check how your payload looks before a real video goes out.
 
 #### A Note on Quote Syntax
 
