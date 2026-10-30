@@ -143,7 +143,7 @@ def send_discord_webhook(webhook_url=None, video_url=None):
         "avatar_url": "https://github.com/fireshare-app/fireshare/raw/develop/app/client/src/assets/logo_square.png",
     }
     try:
-        response = requests.post(webhook_url, json=payload)
+        response = requests.post(webhook_url, json=payload, timeout=15)
         response.raise_for_status()
         print("Webhook sent successfully.")
         return {"status": "success", "message": "Webhook sent successfully."} 
@@ -156,7 +156,7 @@ def send_generic_webhook(webhook_url, video_url=None, custom_payload=None):
     if not payload and video_url:
         payload["content"] = video_url
     try:
-        response = requests.post(webhook_url, json=payload)     
+        response = requests.post(webhook_url, json=payload, timeout=15)
         response.raise_for_status()
         return {"status": "success", "code": response.status_code}  
     except requests.exceptions.RequestException as e:
@@ -174,7 +174,83 @@ def get_public_watch_url(video_id, config, host):
         return f"{host}/w/{video_id}"
     else:
         return print("--Unable to post to Discord--\nPlease check that your DOMAIN env variable is set correctly or that you have a shareable link domain set in your Admin settings.")
-    
+
+def _read_config():
+    with open(current_app.config['PATHS']['data'] / 'config.json') as f:
+        return json.load(f)
+
+def _has_webhook(config):
+    integrations = config.get("integrations", {})
+    return bool(integrations.get("discord_webhook_url") or integrations.get("generic_webhook_url"))
+
+def _webhooks_wait_for_transcodes(config):
+    """Whether new-video webhooks are held until the video's transcodes are made.
+
+    Only when transcodes are actually coming: with transcoding or automatic
+    transcoding off there is nothing to wait for, and the webhooks go out at once.
+    """
+    return bool(
+        config.get("integrations", {}).get("webhook_wait_for_transcodes", False)
+        and current_app.config.get('ENABLE_TRANSCODING')
+        and config.get("transcoding", {}).get("auto_transcode", True)
+    )
+
+def _post_new_video_webhooks(video_id, config, domain):
+    integrations = config.get("integrations", {})
+    discord_webhook_url = integrations.get("discord_webhook_url")
+    generic_webhook_url = integrations.get("generic_webhook_url")
+    video_url = get_public_watch_url(video_id, config, domain)
+    if discord_webhook_url:
+        logger.info(f"Posting to Discord webhook for {video_id}")
+        send_discord_webhook(webhook_url=discord_webhook_url, video_url=video_url)
+    if generic_webhook_url:
+        logger.info(f"Posting to Generic webhook for {video_id}")
+        payload_str = json.dumps(integrations.get("generic_webhook_payload") or {})
+        #Replaces plain text json [[video_url]] with the real video_url python var
+        processed_payload_str = payload_str.replace("[[video_url]]", video_url or "")
+        final_payload = json.loads(processed_payload_str)
+        send_generic_webhook(
+            webhook_url=generic_webhook_url,
+            video_url=video_url,
+            custom_payload=final_payload
+        )
+
+def _notify_new_video(video_id, config, domain):
+    """Post a newly added video to the webhooks, or hold it for its transcodes."""
+    if not _has_webhook(config):
+        return
+    if _webhooks_wait_for_transcodes(config):
+        logger.info(f"Holding webhooks for {video_id} until its transcodes are made")
+        VideoInfo.query.filter_by(video_id=video_id).update({"webhook_pending": True})
+        db.session.commit()
+    else:
+        _post_new_video_webhooks(video_id, config, domain)
+
+def _post_pending_webhooks(video_ids=None):
+    """Post the webhooks held back for video_ids, or for every held video when None.
+
+    Each one is claimed with a conditional update before posting, so two processes
+    that finish with the same video (an upload's own transcode run and a scheduled
+    one) post it only once.
+    """
+    pending = [row.video_id for row in
+               db.session.query(VideoInfo.video_id).filter(VideoInfo.webhook_pending.is_(True)).all()]
+    if video_ids is not None:
+        pending = [vid for vid in pending if vid in video_ids]
+    if not pending:
+        return
+    # Read now rather than when the video was added: the webhooks may have changed
+    # while it waited.
+    config = _read_config()
+    domain = current_app.config['DOMAIN']
+    for video_id in pending:
+        claimed = (VideoInfo.query
+                   .filter_by(video_id=video_id, webhook_pending=True)
+                   .update({"webhook_pending": False}, synchronize_session=False))
+        db.session.commit()
+        if claimed and _has_webhook(config):
+            _post_new_video_webhooks(video_id, config, domain)
+
 def _get_or_create_media_folder(folder_cache, dirname, media_type):
     """Get or create a MediaFolder for (dirname, media_type), using folder_cache to avoid duplicate queries/inserts."""
     key = (dirname, media_type)
@@ -404,11 +480,8 @@ def scan_videos(root):
         config_file = open(paths["data"] / "config.json")
         config = json.load(config_file)
         video_config = config["app_config"]["video_defaults"]
-        discord_webhook_url = config["integrations"]["discord_webhook_url"]
-        generic_webhook_url = config["integrations"]["generic_webhook_url"]
-        generic_webhook_payload = config["integrations"]["generic_webhook_payload"]
         config_file.close()
-        
+
         if not video_links.is_dir():
             video_links.mkdir()
 
@@ -539,20 +612,7 @@ def scan_videos(root):
             if not poster_ready:
                 logger.warning(f"Skipping webhook for {nv.video_id}: poster not ready")
                 continue
-            video_url = get_public_watch_url(nv.video_id, config, domain)
-            if discord_webhook_url:
-                logger.info(f"Posting to Discord webhook for {nv.video_id}")
-                send_discord_webhook(webhook_url=discord_webhook_url, video_url=video_url)
-            if generic_webhook_url:
-                logger.info(f"Posting to Generic webhook for {nv.video_id}")
-                payload_str = json.dumps(generic_webhook_payload)
-                processed_payload_str = payload_str.replace("[[video_url]]", video_url or "")
-                final_payload = json.loads(processed_payload_str)
-                send_generic_webhook(
-                    webhook_url=generic_webhook_url,
-                    video_url=video_url,
-                    custom_payload=final_payload
-                )
+            _notify_new_video(nv.video_id, config, domain)
 
 
         # Auto-tag new videos based on folder rules
@@ -634,9 +694,6 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
         config_file = open(paths["data"] / "config.json")
         config = json.load(config_file)
         video_config = config["app_config"]["video_defaults"]
-        discord_webhook_url = config["integrations"]["discord_webhook_url"]
-        generic_webhook_url = config["integrations"]["generic_webhook_url"]
-        generic_webhook_payload = config["integrations"]["generic_webhook_payload"]
 
         config_file.close()
         
@@ -772,25 +829,10 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
                             util.create_boomerang_preview(source_path, boomerang_path)
 
                     poster_ready = poster_path.exists() and poster_path.stat().st_size > 0
-                    if discord_webhook_url and poster_ready:
-                        logger.info(f"Posting to Discord webhook")
-                        video_url = get_public_watch_url(video_id, config, domain)
-                        send_discord_webhook(webhook_url=discord_webhook_url, video_url=video_url)
-                    elif discord_webhook_url and not poster_ready:
-                        logger.warning(f"Skipping Discord webhook for {video_id}: poster not ready")
-
-                    if generic_webhook_url and poster_ready:
-                        logger.info(f"Posting to Generic webhook")
-                        video_url = get_public_watch_url(video_id, config, domain)
-                        payload_str = json.dumps(generic_webhook_payload)
-                        #Replaces plain text json [[video_url]] with the real video_url python var
-                        processed_payload_str = payload_str.replace("[[video_url]]", video_url or "")
-                        final_payload = json.loads(processed_payload_str)
-                        send_generic_webhook(
-                            webhook_url=generic_webhook_url,
-                            video_url=video_url,
-                            custom_payload=final_payload
-                        )
+                    if poster_ready:
+                        _notify_new_video(video_id, config, domain)
+                    elif _has_webhook(config):
+                        logger.warning(f"Skipping webhooks for {video_id}: poster not ready")
 
                     if current_app.config.get('ENABLE_TRANSCODING'):
                         auto_transcode = config.get('transcoding', {}).get('auto_transcode', True)
@@ -1045,6 +1087,10 @@ def transcode_videos(regenerate, video, include_corrupt):
             # Get videos to transcode
             vinfos = VideoInfo.query.filter(VideoInfo.video_id==video).all() if video else VideoInfo.query.all()
 
+            # Webhooks held for these videos are posted once this run is done with
+            # them. A video added after this point waits for the run that covers it.
+            covered_ids = {vi.video_id for vi in vinfos}
+
             # Filter out corrupt videos unless explicitly included
             corrupt_videos = set(get_all_corrupt_videos())
             if not include_corrupt and not video:
@@ -1211,6 +1257,7 @@ def transcode_videos(regenerate, video, include_corrupt):
                     )
                 logger.info("No videos need transcoding")
                 util.clear_transcoding_status(paths['data'])
+                _post_pending_webhooks(covered_ids)
                 return
 
             # Remove any leftover *.tmp.mp4 files from a previous run that crashed
@@ -1231,7 +1278,15 @@ def transcode_videos(regenerate, video, include_corrupt):
             # Track corrupt videos to skip remaining heights for that video
             corrupt_video_ids = set()
 
+            previous_video_id = None
             for idx, (vi, height, video_path, derived_path, transcode_path) in enumerate(work_items, 1):
+                # A video's qualities are queued together, so once the next video
+                # comes up the previous one's webhooks can go out, whether or not
+                # every transcode succeeded.
+                if previous_video_id is not None and previous_video_id != vi.video_id:
+                    _post_pending_webhooks({previous_video_id})
+                previous_video_id = vi.video_id
+
                 # Skip if this video was marked corrupt during this run
                 if vi.video_id in corrupt_video_ids:
                     continue
@@ -1293,6 +1348,7 @@ def transcode_videos(regenerate, video, include_corrupt):
 
             util.clear_transcoding_status(paths['data'])
             logger.info("Transcoding complete")
+            _post_pending_webhooks(covered_ids)
         finally:
             util.remove_lock(paths['data'], _TRANSCODE_LOCK)
 
@@ -1345,6 +1401,11 @@ def bulk_import(ctx, root):
                 timing['transcode_videos'] = time.time() - s
             else:
                 logger.info("Skipping automatic transcoding (auto_transcode is disabled in settings)")
+
+        # Webhooks held for transcodes that are no longer coming go out now: the
+        # wait, transcoding or automatic transcoding was turned off since.
+        if not _webhooks_wait_for_transcodes(_read_config()):
+            _post_pending_webhooks()
 
         logger.info(f"Finished bulk import. Timing info: {json.dumps(timing)}")
         util.clear_transcoding_status(paths['data'])

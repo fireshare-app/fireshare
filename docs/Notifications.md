@@ -19,6 +19,16 @@ DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/123456789/abcdefghijklmnop
 
 ---
 
+### Waiting for Transcodes
+
+By default a notification goes out as soon as a new video is added, while its lower qualities (1080p, 720p, 480p) may still be transcoding. Anyone who opens the link straight away then plays the full-size original.
+
+Turn on **Wait for transcodes to finish** on the Integrations page to hold each notification until that video's transcodes are done. It applies to both the Discord and the Generic Webhook, and only takes effect when transcoding is enabled (`ENABLE_TRANSCODING=true`) and **Automatically transcode new videos** is on. Otherwise there is nothing to wait for and notifications go out right away.
+
+If a transcode fails, the notification is still sent once Fireshare has finished trying that video.
+
+---
+
 ### Generic Webhook
 
 For any notification service that supports HTTP POST requests with a JSON payload, you can use the Generic Webhook integration. This allows Fireshare to send notifications to virtually any platform that supports webhooks.
