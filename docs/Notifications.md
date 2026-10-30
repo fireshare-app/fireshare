@@ -39,13 +39,13 @@ Enter valid JSON into the "Generic Webhook JSON Payload" field on the Integratio
 
 #### Including a Link to the Video
 
-You can include a direct link to the newly uploaded video in your notification by using the `[video_url]` placeholder anywhere in your JSON payload.
+You can include a direct link to the newly uploaded video in your notification by using the `[[video_url]]` placeholder anywhere in your JSON payload.
 
 **Example payload with video link:**
 ```json
 {
     "Title": "Fireshare",
-    "message": "New Video Uploaded to Fireshare [video_url]"
+    "message": "New Video Uploaded to Fireshare [[video_url]]"
 }
 ```
 
@@ -66,13 +66,13 @@ JSON payloads use key/value pairs where strings are wrapped in quotes. Keep the 
 
 **Docker ENV example:**
 ```
-GENERIC_WEBHOOK_PAYLOAD='{"Title": "Fireshare", "message": "New Video Uploaded to Fireshare [video_url]"}'
+GENERIC_WEBHOOK_PAYLOAD='{"Title": "Fireshare", "message": "New Video Uploaded to Fireshare [[video_url]]"}'
 # Note: this must be a single line
 ```
 
 **Full Docker ENV example:**
 ```
 GENERIC_WEBHOOK_URL='https://webhook.com/at/endpoint12345'
-GENERIC_WEBHOOK_PAYLOAD='{"Title": "Fireshare", "message": "New Video Uploaded to Fireshare [video_url]"}'
+GENERIC_WEBHOOK_PAYLOAD='{"Title": "Fireshare", "message": "New Video Uploaded to Fireshare [[video_url]]"}'
 # Both ENV variables must be set for the Generic Webhook to work
 ```
