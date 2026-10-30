@@ -195,6 +195,49 @@ def _webhooks_wait_for_transcodes(config):
         and config.get("transcoding", {}).get("auto_transcode", True)
     )
 
+_WEBHOOK_PLACEHOLDER = re.compile(r"\[\[(\w+)\]\]")
+
+# What the Test Webhook button fills the placeholders with, one per placeholder
+# that _generic_webhook_values fills for a real video.
+GENERIC_WEBHOOK_SAMPLE_VALUES = {
+    "video_url": "https://fireshare.test.worked",
+    "video_title": "Fireshare Test Video",
+    "video_description": "A test notification from Fireshare",
+    "uploader_name": "Fireshare",
+    "game_name": "Test Game",
+    "tags": "Test, Fireshare",
+}
+
+def fill_webhook_placeholders(payload, values):
+    """Substitute the [[placeholders]] in a generic webhook payload with values.
+
+    Done on the payload's JSON text so a placeholder can sit anywhere in a string.
+    Each value is JSON-escaped first, so a title with quotes or backslashes can't
+    break the payload, and all are substituted in one pass, so a value that itself
+    contains [[...]] is left as it is. Unknown placeholders are kept.
+    """
+    escaped = {name: json.dumps(str(value))[1:-1] for name, value in values.items()}
+    payload_str = json.dumps(payload or {})
+    payload_str = _WEBHOOK_PLACEHOLDER.sub(lambda m: escaped.get(m.group(1), m.group(0)), payload_str)
+    return json.loads(payload_str)
+
+def _generic_webhook_values(video_id, video_url):
+    """The generic webhook placeholder values for a video, "" for any it lacks."""
+    video = Video.query.filter_by(video_id=video_id).first()
+    info = video.info if video else None
+    games = [link.game.name for link in
+             VideoGameLink.query.filter_by(video_id=video_id).order_by(VideoGameLink.id).all() if link.game]
+    tags = [link.tag.name for link in
+            VideoTagLink.query.filter_by(video_id=video_id).order_by(VideoTagLink.id).all() if link.tag]
+    return {
+        "video_url": video_url or "",
+        "video_title": (info.title if info else None) or "",
+        "video_description": (info.description if info else None) or "",
+        "uploader_name": video.uploader.name if video and video.uploader else "",
+        "game_name": ", ".join(games),
+        "tags": ", ".join(tags),
+    }
+
 def _post_new_video_webhooks(video_id, config, domain):
     integrations = config.get("integrations", {})
     discord_webhook_url = integrations.get("discord_webhook_url")
@@ -205,10 +248,10 @@ def _post_new_video_webhooks(video_id, config, domain):
         send_discord_webhook(webhook_url=discord_webhook_url, video_url=video_url)
     if generic_webhook_url:
         logger.info(f"Posting to Generic webhook for {video_id}")
-        payload_str = json.dumps(integrations.get("generic_webhook_payload") or {})
-        #Replaces plain text json [[video_url]] with the real video_url python var
-        processed_payload_str = payload_str.replace("[[video_url]]", video_url or "")
-        final_payload = json.loads(processed_payload_str)
+        final_payload = fill_webhook_placeholders(
+            integrations.get("generic_webhook_payload"),
+            _generic_webhook_values(video_id, video_url),
+        )
         send_generic_webhook(
             webhook_url=generic_webhook_url,
             video_url=video_url,
@@ -578,6 +621,29 @@ def scan_videos(root):
             db.session.add(info)
         db.session.commit()
 
+        # Auto-tag new videos based on folder rules, before the webhooks below so
+        # they can name the game
+        auto_tagged = set()
+        if new_videos:
+            folder_rules = {rule.folder_path: rule.game_id for rule in FolderRule.query.all()}
+            if folder_rules:
+                logger.info(f"Checking {len(new_videos)} new video(s) against {len(folder_rules)} folder rule(s)")
+            for nv in new_videos:
+                parts = nv.path.split('/')
+                if len(parts) > 1:
+                    folder = parts[0]
+                    if folder in folder_rules:
+                        game_id = folder_rules[folder]
+                        existing = VideoGameLink.query.filter_by(video_id=nv.video_id, game_id=game_id).first()
+                        if not existing:
+                            link = VideoGameLink(video_id=nv.video_id, game_id=game_id, created_at=datetime.utcnow())
+                            db.session.add(link)
+                        auto_tagged.add(nv.video_id)
+                        logger.info(f"[Folder Rule] Auto-tagged {nv.video_id} to game {game_id} (folder: {folder})")
+            if auto_tagged:
+                db.session.commit()
+                logger.info(f"Auto-tagged {len(auto_tagged)} video(s) via folder rules")
+
         # Generate metadata and posters for new videos, then fire webhooks
         thumbnail_skip = util.thumbnail_skip_fraction(current_app.config['THUMBNAIL_VIDEO_LOCATION'])
         processed_root = Path(current_app.config['PROCESSED_DIRECTORY'])
@@ -613,29 +679,6 @@ def scan_videos(root):
                 logger.warning(f"Skipping webhook for {nv.video_id}: poster not ready")
                 continue
             _notify_new_video(nv.video_id, config, domain)
-
-
-        # Auto-tag new videos based on folder rules
-        auto_tagged = set()
-        if new_videos:
-            folder_rules = {rule.folder_path: rule.game_id for rule in FolderRule.query.all()}
-            if folder_rules:
-                logger.info(f"Checking {len(new_videos)} new video(s) against {len(folder_rules)} folder rule(s)")
-            for nv in new_videos:
-                parts = nv.path.split('/')
-                if len(parts) > 1:
-                    folder = parts[0]
-                    if folder in folder_rules:
-                        game_id = folder_rules[folder]
-                        existing = VideoGameLink.query.filter_by(video_id=nv.video_id, game_id=game_id).first()
-                        if not existing:
-                            link = VideoGameLink(video_id=nv.video_id, game_id=game_id, created_at=datetime.utcnow())
-                            db.session.add(link)
-                        auto_tagged.add(nv.video_id)
-                        logger.info(f"[Folder Rule] Auto-tagged {nv.video_id} to game {game_id} (folder: {folder})")
-            if auto_tagged:
-                db.session.commit()
-                logger.info(f"Auto-tagged {len(auto_tagged)} video(s) via folder rules")
 
         # Automatic game detection for new videos (skip already tagged)
         steamgriddb_api_key = config.get("integrations", {}).get("steamgriddb_api_key")
