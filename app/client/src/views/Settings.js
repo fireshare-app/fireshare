@@ -1013,6 +1013,30 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
                     Test Webhook
                   </Button>
 
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={updatedConfig.integrations?.webhook_wait_for_transcodes === true}
+                        disabled={!transcodingStatus.enabled}
+                        onChange={(e) =>
+                          setUpdatedConfig((prev) => ({
+                            ...prev,
+                            integrations: { ...prev.integrations, webhook_wait_for_transcodes: e.target.checked },
+                          }))
+                        }
+                      />
+                    }
+                    label="Wait for transcodes to finish"
+                  />
+                  <Typography variant="caption" sx={{ color: 'text.secondary', mt: -1 }}>
+                    {!transcodingStatus.enabled
+                      ? 'Transcoding is off on this server, so notifications go out as soon as a video is added.'
+                      : updatedConfig.transcoding?.auto_transcode === false
+                        ? 'Automatic transcoding is off, so notifications go out as soon as a video is added.'
+                        : 'Hold the notification for a new video until its lower qualities are ready, so the link plays smoothly for everyone who opens it right away.'}
+                  </Typography>
+
                   <Divider />
 
                   <header>Game Tagging</header>
