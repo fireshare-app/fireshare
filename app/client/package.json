@@ -1,6 +1,6 @@
 {
   "name": "fireshare",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "private": true,
   "dependencies": {
     "@emotion/react": "^11.9.0",
