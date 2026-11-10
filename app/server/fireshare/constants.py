@@ -28,6 +28,8 @@ DEFAULT_CONFIG = {
     "discord_webhook_url": "",
     "generic_webhook_url": "",
     "generic_webhook_payload": {},
+    # Hold new-video webhooks until the video's transcodes are made.
+    "webhook_wait_for_transcodes": False,
     "steamgriddb_api_key": "",
   },
   "rss_config": {

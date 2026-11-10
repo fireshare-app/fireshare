@@ -227,6 +227,9 @@ class VideoInfo(db.Model):
     has_sdr       = db.Column(db.Boolean, default=False)
     sdr_error     = db.Column(db.String(512), nullable=True)
     password_hash = db.Column(db.String(256), nullable=True)
+    # Set while the new-video webhooks wait for this video's transcodes, when the
+    # admin has chosen to hold them; the transcode run posts them and clears it.
+    webhook_pending = db.Column(db.Boolean, default=False)
 
     video       = db.relationship("Video", back_populates="info", uselist=False, lazy="joined")
 

@@ -9,7 +9,7 @@ from flask_login import login_required, current_user
 
 from .. import db, logger
 from ..models import Video, VideoInfo
-from ..cli import send_discord_webhook, send_generic_webhook
+from ..cli import send_discord_webhook, send_generic_webhook, fill_webhook_placeholders, GENERIC_WEBHOOK_SAMPLE_VALUES
 from . import api
 from .decorators import admin_required, demo_restrict, strict_admin_required
 
@@ -282,12 +282,17 @@ def test_discord_webhook():
 def test_webhook():
     data = request.get_json()
     webhook_url = data.get('webhook_url')
-    video_url = data.get('video_url')
-    payload = data.get('payload')
+    video_url = data.get('video_url') or GENERIC_WEBHOOK_SAMPLE_VALUES['video_url']
 
     if not webhook_url:
         return jsonify({"error": "No Webhook URL provided"}), 400
     try:
+        # Sample values stand in for a real video's, so the test shows each
+        # placeholder filled
+        payload = fill_webhook_placeholders(
+            data.get('payload'),
+            {**GENERIC_WEBHOOK_SAMPLE_VALUES, 'video_url': video_url},
+        )
         result = send_generic_webhook(webhook_url, video_url, payload)
         if result.get("status") == "success":
             return jsonify({"message": "Webhook sent successfully!"}), 200
