@@ -85,12 +85,15 @@ proxy_read_timeout 999999s;
 
 ## Permission Errors
 
-The container runs as user/group `PUID`/`PGID` (default: `1000`/`1000`). All three mounted directories must be readable and writable by this user.
+The container runs as user/group `PUID`/`PGID` (default: `1000`/`1000`). All mounted directories must be readable and writable by this user.
+
+At startup Fireshare takes ownership of `/data` and `/processed`. It never changes ownership inside `/videos` or `/images`, since those hold your own library; it only claims either one when it is empty (a fresh Docker named volume, for example). If one of them is still not writable, the startup log says so with a line like `/videos is not writable by UID=1000 GID=1000`.
 
 **Symptoms:**
 - Videos scanned but symlinks fail to create
 - Database not initializing on first run
 - Transcoded files not appearing in `/processed/derived/`
+- Uploads failing with "The server was denied access to a file or folder"
 - Errors containing `Permission denied` in container logs
 
 **Preferred fix:** Set `PUID` and `PGID` to match the user that already owns your directories:

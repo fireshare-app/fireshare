@@ -507,3 +507,20 @@ export const uploaderSortKey = (uploader) => (uploader ? uploaderLabel(uploader)
 // "@username" when the account has no distinct display name.
 export const uploaderOptionLabel = (u) =>
   u.name && u.name !== u.username ? `${u.name} (@${u.username})` : `@${u.username}`
+
+// The plain-text reason a failed upload's response gives (a folder the server
+// cannot write to, say), or null. An HTML error page from nginx, or a JSON body,
+// is not worth putting in a toast.
+export const uploadErrorReason = (err) => {
+  const data = err?.response?.data
+  if (typeof data !== 'string') return null
+  const text = data.trim()
+  return text && !text.startsWith('<') ? text : null
+}
+
+// Send the file's original modified time with an upload, when the browser reports
+// one, so the server can date a file that carries no date of its own by it rather
+// than by the moment the upload finished.
+export const appendLastModified = (formData, file) => {
+  if (Number.isFinite(file?.lastModified)) formData.append('lastModified', String(file.lastModified))
+}

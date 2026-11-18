@@ -44,6 +44,7 @@ extension — `mp4`, `m4v`, `mov`, `webm` for video; `jpg`, `jpeg`, `png`, `webp
 | `game_id` | no | Fireshare game id to link the upload to. |
 | `game` | no | Game *name*, matched case-insensitively against games already in the library. Ignored when `game_id` is given; a name that matches nothing is a 400. |
 | `tag_ids` | no | Comma-separated tag ids. |
+| `lastModified` | no | The file's original modified time, in milliseconds since the epoch. When the file carries no date in its metadata or its name, the item is dated by this instead of the moment the upload finished. Missing or future values are ignored. |
 
 The token goes in a header, never a query string — a URL ends up in proxy access
 logs and shell history. `X-Fireshare-Token: <token>` works as an alternative to
@@ -123,7 +124,7 @@ parts are written into, so a chunk that names a different folder — or omits it
 and so lands in the default — leaves its part somewhere the completing request
 will not look. The set then never completes and the upload sits at `202` forever.
 
-`title`, `game_id`, `game` and `tag_ids` are read from whichever request completes
+`title`, `game_id`, `game`, `tag_ids` and `lastModified` are read from whichever request completes
 the set. Since you cannot know in advance which one that is, send them on every
 chunk as well.
 

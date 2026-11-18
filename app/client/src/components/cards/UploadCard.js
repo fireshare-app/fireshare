@@ -23,7 +23,7 @@ import CloudUploadIcon from '@mui/icons-material/CloudUpload'
 import styled from '@emotion/styled'
 import { keyframes } from '@emotion/react'
 import { VideoService, GameService, TagService } from '../../services'
-import { getSetting } from '../../common/utils'
+import { appendLastModified, getSetting, uploadErrorReason } from '../../common/utils'
 
 const FINISHED_STATUSES = new Set(['done', 'error', 'duplicate'])
 const isFinished = (item) => FINISHED_STATUSES.has(item.status)
@@ -502,7 +502,7 @@ const UploadCard = React.forwardRef(function UploadCard(
           formData.append('checkSum', checksum)
           formData.append('fileName', file.name)
           formData.append('fileSize', file.size.toString())
-          formData.append('lastModified', file.lastModified.toString())
+          appendLastModified(formData, file)
           formData.append('fileType', file.type)
           appendMetadata(formData)
 
@@ -513,6 +513,7 @@ const UploadCard = React.forwardRef(function UploadCard(
       } else {
         const formData = new FormData()
         formData.append('file', file)
+        appendLastModified(formData, file)
         appendMetadata(formData)
         if (authenticated) {
           await VideoService.upload(formData, reportProgress)
@@ -531,9 +532,12 @@ const UploadCard = React.forwardRef(function UploadCard(
         return
       }
       updateQueueItem(item.id, { status: 'error' })
+      const reason = uploadErrorReason(err)
       handleAlert({
         type: 'error',
-        message: `An error occurred while uploading ${file.name}.`,
+        message: reason
+          ? `Failed to upload ${file.name}: ${reason}`
+          : `An error occurred while uploading ${file.name}.`,
         open: true,
       })
     }

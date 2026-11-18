@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import shutil
 import threading
@@ -558,10 +557,10 @@ def create_video_folder():
 
     try:
         new_folder_path.mkdir()
-        logging.info(f"Created folder: {new_folder_path}")
+        logger.info(f"Created folder: {new_folder_path}")
         return Response(status=201)
     except Exception as e:
-        logging.error(f"Error creating folder {folder_name}: {e}")
+        logger.error(f"Error creating folder {folder_name}: {e}")
         return Response(status=500, response=str(e))
 
 
@@ -613,7 +612,7 @@ def delete_video_folder():
         try:
             folder_path.rmdir()
             results['deleted'].append(folder_name)
-            logging.info(f"Deleted empty folder: {folder_path}")
+            logger.info(f"Deleted empty folder: {folder_path}")
             MediaFolder.query.filter_by(path=folder_name, media_type="video").delete()
         except Exception as e:
             results['errors'].append({'folder': folder_name, 'error': str(e)})
@@ -1205,10 +1204,10 @@ def create_image_folder():
 
     try:
         new_folder_path.mkdir()
-        logging.info(f"Created image folder: {new_folder_path}")
+        logger.info(f"Created image folder: {new_folder_path}")
         return Response(status=201)
     except Exception as e:
-        logging.error(f"Error creating image folder {folder_name}: {e}")
+        logger.error(f"Error creating image folder {folder_name}: {e}")
         return Response(status=500, response=str(e))
 
 
@@ -1262,7 +1261,7 @@ def delete_image_folder():
         try:
             folder_path.rmdir()
             results['deleted'].append(folder_name)
-            logging.info(f"Deleted empty image folder: {folder_path}")
+            logger.info(f"Deleted empty image folder: {folder_path}")
             MediaFolder.query.filter_by(path=folder_name, media_type="image").delete()
         except Exception as e:
             results['errors'].append({'folder': folder_name, 'error': str(e)})
