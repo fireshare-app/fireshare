@@ -726,7 +726,8 @@ def scan_videos(root):
 @click.option("--game-id", type=int, help="game ID to apply", required=False, default=None)
 @click.option("--title", help="initial title for the video (defaults to filename stem)", required=False, default=None)
 @click.option("--uploaded-by", type=int, help="id of the user who uploaded this video", required=False, default=None)
-def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
+@click.option("--client-mtime", type=float, help="the file's modified time on the uploader's machine, in seconds since the epoch; the recorded date when the file carries none of its own", required=False, default=None)
+def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by, client_mtime):
     with create_app().app_context():
         paths = current_app.config['PATHS']
         domain = current_app.config['DOMAIN']
@@ -775,11 +776,21 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
                     updated_at = datetime.fromtimestamp(os.path.getmtime(f"{videos_path}/{path}"))
                     logger.debug(f"Updating Video {video_id}, updated_at={updated_at}")
                     db.session.query(Video).filter_by(video_id=existing.video_id).update({ "updated_at": updated_at })
+                # A scheduled scan can index an upload in the moment before this
+                # command runs. It then dates the file by the time the upload
+                # finished writing, which is exactly this file's own mtime, so that
+                # match identifies it. A metadata or filename date never lands on
+                # the same microsecond, and a restored file's row keeps its date.
+                if (client_mtime is not None and existing.recorded_at is not None
+                        and existing.recorded_at == datetime.fromtimestamp(os.path.getmtime(video_file))):
+                    recorded_at = datetime.fromtimestamp(client_mtime)
+                    logger.debug(f"Updating Video {video_id}, recorded_at={recorded_at} from the uploader's file time")
+                    db.session.query(Video).filter_by(video_id=existing.video_id).update({ "recorded_at": recorded_at })
                 db.session.commit()
             else:
                 created_at = datetime.fromtimestamp(os.path.getmtime(f"{videos_path}/{path}"))
                 updated_at = datetime.fromtimestamp(os.path.getmtime(f"{videos_path}/{path}"))
-                recorded_at = util.extract_date_from_file(video_file)
+                recorded_at = util.extract_date_from_file(video_file, fallback_timestamp=client_mtime)
                 # Assign the containing folder the same way scan_videos does, so an
                 # upload sorted into a game folder shows up under that folder right
                 # away instead of waiting for the next full scan.
@@ -1634,7 +1645,8 @@ def scan_images(root):
 @click.option("--tag-ids", help="Comma-separated custom tag IDs to apply", required=False, default=None)
 @click.option("--title", help="Initial title for the image", required=False, default=None)
 @click.option("--uploaded-by", type=int, help="id of the user who uploaded this image", required=False, default=None)
-def scan_image(ctx, path, game_id, tag_ids, title, uploaded_by):
+@click.option("--client-mtime", type=float, help="the file's modified time on the uploader's machine, in seconds since the epoch; the image's date when it carries none of its own", required=False, default=None)
+def scan_image(ctx, path, game_id, tag_ids, title, uploaded_by, client_mtime):
     """Scan a single image file and index it."""
     with create_app().app_context():
         image_directory = current_app.config.get('IMAGE_DIRECTORY')
@@ -1665,6 +1677,14 @@ def scan_image(ctx, path, game_id, tag_ids, title, uploaded_by):
             if not existing.available:
                 db.session.query(Image).filter_by(image_id=iid).update({"available": True})
                 db.session.commit()
+            # A scheduled scan that got to this upload first dated it by its own
+            # mtime, the moment the upload finished; see scan_video.
+            if (client_mtime is not None and existing.created_at is not None
+                    and existing.created_at == datetime.fromtimestamp(os.path.getmtime(img_file))):
+                client_date = datetime.fromtimestamp(client_mtime)
+                logger.debug(f"Updating Image {iid}, created_at={client_date} from the uploader's file time")
+                db.session.query(Image).filter_by(image_id=iid).update({"created_at": client_date, "updated_at": client_date})
+                db.session.commit()
             # Regenerate missing WebP/thumbnail for existing images
             info = ImageInfo.query.filter_by(image_id=iid).first()
             if info and (not info.has_webp or not info.has_thumbnail):
@@ -1694,7 +1714,7 @@ def scan_image(ctx, path, game_id, tag_ids, title, uploaded_by):
             else:
                 logger.debug(f"Image {iid} already indexed")
         else:
-            created_at = util.extract_date_from_image_file(img_file)
+            created_at = util.extract_date_from_image_file(img_file, fallback_timestamp=client_mtime)
             updated_at = created_at
             source_folder = rel_path.split('/')[0] if '/' in rel_path else None
             img = Image(image_id=iid, extension=img_file.suffix, path=rel_path,

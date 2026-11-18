@@ -16,6 +16,28 @@ def secure_filename(filename):
     return clean
 
 
+def parse_client_mtime(last_modified_ms):
+    """The modified time an uploaded file had on the uploader's machine, in
+    seconds since the epoch, or None.
+
+    When a file carries no date in its metadata or its name, the scan falls back
+    to its mtime, which for an upload is only the moment the upload finished.
+    Browsers report File.lastModified (milliseconds since the epoch) and the
+    upload forms send it as `lastModified`; the scan uses it in place of that
+    fallback. It is handed to the scan rather than written onto the file, because
+    the file's mtime also sets when the video was added to the library.
+    Anything missing, malformed or in the future gives None, and such a file is
+    dated by its upload time as before.
+    """
+    try:
+        mtime = int(last_modified_ms) / 1000
+    except (TypeError, ValueError):
+        return None
+    if mtime <= 0 or mtime > time.time() + 24 * 60 * 60:
+        return None
+    return mtime
+
+
 # Path separators and control characters are never valid in a folder name. Spaces
 # and punctuation are, because auto-sorted uploads are filed under the game's name
 # ("Zenless Zone Zero"), and rejecting those would silently drop the upload back

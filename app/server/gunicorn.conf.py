@@ -1,3 +1,4 @@
+import glob
 import multiprocessing
 import os
 import tempfile
@@ -55,17 +56,20 @@ worker_tmp_dir = "/dev/shm"  # Use RAM for worker tmp files
 # Sentinel files used to elect exactly one worker per gunicorn lifetime.
 # Uses /dev/shm (already our worker_tmp_dir) which is guaranteed writable.
 # Written with O_EXCL so the first worker to create it wins atomically.
+# The app claims its own through fireshare.claim_sentinel (the startup chunk
+# cleanup, the startup warnings, the update notice). Every one is named
+# fireshare_*, and on_starting clears them all by that prefix, so this file does
+# not need to know their names.
 _SCHEDULER_SENTINEL = os.path.join(_SHM_DIR, "fireshare_scheduler.lock")
-# Claimed by the first worker that starts; prevents subsequent workers (including
-# workers that restart mid-upload) from re-running the startup chunk cleanup.
-_CLEANUP_SENTINEL = os.path.join(_SHM_DIR, "fireshare_cleanup.lock")
+_SENTINEL_GLOB = os.path.join(_SHM_DIR, "fireshare_*")
 
 
 def on_starting(server):
     """Called just before the master process is initialized."""
-    # Remove stale sentinels from a previous run so the first worker of this
-    # run can cleanly (re-)claim the scheduler and cleanup roles.
-    for sentinel in (_SCHEDULER_SENTINEL, _CLEANUP_SENTINEL):
+    # Remove stale sentinels from a previous run, and any the entrypoint's CLI
+    # steps claimed before the server started, so this run's workers hold a fresh
+    # election for every role.
+    for sentinel in glob.glob(_SENTINEL_GLOB):
         try:
             os.unlink(sentinel)
         except Exception:

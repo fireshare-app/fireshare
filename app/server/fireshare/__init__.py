@@ -2,6 +2,7 @@ import os, sys, re, copy, tempfile
 import os.path
 from . import ldap_retired
 from flask import Flask
+from flask.logging import default_handler
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_login import LoginManager
@@ -22,6 +23,41 @@ formatter = logging.Formatter('%(asctime)s %(levelname)-7s %(module)s.%(funcName
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.DEBUG)
+# This handler is the only place fireshare's records are written. Left to
+# propagate, they reached the root logger too, which a bare logging.info()
+# anywhere in the process configures, and every line printed a second time.
+logger.propagate = False
+
+
+def claim_sentinel(name, on_error=False):
+    """
+    Atomically create a sentinel file in shared memory and return True for the
+    one process that created it, False for every other. O_CREAT|O_EXCL makes
+    this a race-free election across gunicorn workers and the CLI processes they
+    launch. `name` must start with "fireshare_": gunicorn.conf.py's on_starting
+    removes every such file, so each run of the server holds a fresh election.
+
+    on_error is returned when the sentinel cannot be created at all, such as an
+    unwritable /dev/shm, so the caller chooses whether to act anyway or not at all.
+    """
+    shm_dir = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
+    try:
+        fd = os.open(os.path.join(shm_dir, name), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    except Exception as e:
+        logger.warning(f"Could not create sentinel {name}: {e}")
+        return on_error
+    # The file now exists, so this process has won whatever happens next. The pid
+    # inside is only a note for whoever looks; a full /dev/shm must not turn a
+    # won election into an exception.
+    try:
+        os.write(fd, str(os.getpid()).encode())
+    except OSError as e:
+        logger.warning(f"Could not write sentinel {name}: {e}")
+    finally:
+        os.close(fd)
+    return True
 
 def env_bool(name, default=False):
     """Read a boolean env var. An explicitly falsy value ("false", "0", "no") turns the
@@ -124,6 +160,11 @@ def create_app(init_schedule=False):
     ldap_retired.abort_if_ldap_configured(logger)
 
     app = Flask(__name__, static_url_path='', static_folder='build', template_folder='build')
+    # app.logger is the 'fireshare' logger above, since Flask names it after the
+    # import name. Flask adds its own stderr handler to it unless one is already
+    # set at the logger's level, and ours sits at FS_LOGLEVEL rather than DEBUG,
+    # so it always did: every record then printed twice, in two formats.
+    app.logger.removeHandler(default_handler)
 
     # Cross-origin access is off unless an operator names the origins that need it.
     # It used to be CORS(app, supports_credentials=True) with no origins, which
@@ -258,7 +299,6 @@ def create_app(init_schedule=False):
     if (app.config['ADMIN_PASSWORD'] and app.config['ADMIN_USERNAME'] == "admin") and app.config["DISABLE_ADMINCREATE"] == False:
         stdPasswordWarning = "You are using the Default Login-Credentials, please consider changing it."
         app.config['WARNINGS'].append(stdPasswordWarning)
-        logger.warning(stdPasswordWarning)
 
     # Check for SteamGridDB API key
     config_path = Path(app.config['DATA_DIRECTORY']) / 'config.json'
@@ -276,7 +316,6 @@ def create_app(init_schedule=False):
     if not steamgrid_api_key:
         steamgridWarning = "SteamGridDB API key not configured. Game metadata features are unavailable. Click here to set it up."
         app.config['WARNINGS'].append(steamgridWarning)
-        logger.warning(steamgridWarning)
 
     paths = {
         'data': Path(app.config['DATA_DIRECTORY']),
@@ -317,19 +356,19 @@ def create_app(init_schedule=False):
     # scheduler election) so only the very first worker to start does the cleanup;
     # all subsequent workers - including restarts triggered by max_requests or
     # crashes - skip it and leave in-progress chunks untouched.
-    import tempfile as _tempfile
-    _SHM_DIR = "/dev/shm" if os.path.isdir("/dev/shm") else _tempfile.gettempdir()
-    _CLEANUP_SENTINEL = os.path.join(_SHM_DIR, "fireshare_cleanup.lock")
-    _should_cleanup = False
-    try:
-        fd = os.open(_CLEANUP_SENTINEL, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        _should_cleanup = True
-    except FileExistsError:
-        pass  # Another worker already claimed cleanup for this startup
-    except Exception as e:
-        logger.warning(f"Could not create cleanup sentinel: {e}")
+    _should_cleanup = claim_sentinel("fireshare_cleanup.lock")
+
+    # Log the startup warnings once per server start. Every gunicorn worker runs
+    # create_app(), and so does each `fireshare` CLI process the scheduled scan
+    # launches every few minutes, so logging them unconditionally repeated them for
+    # as long as the container ran. Only web workers (init_schedule) take part,
+    # and the first one logs. If the sentinel cannot be created at all, each logs
+    # rather than none. The dev server runs without gunicorn, so it always logs.
+    # The UI shows the warnings either way.
+    if (init_schedule and claim_sentinel("fireshare_startup_warnings.lock", on_error=True)) \
+            or app.config['ENVIRONMENT'] == 'dev':
+        for warning in app.config['WARNINGS']:
+            logger.warning(warning)
 
     if _should_cleanup:
         import glob as _glob

@@ -21,7 +21,7 @@ import CloudUploadIcon from '@mui/icons-material/CloudUpload'
 import ImageIcon from '@mui/icons-material/Image'
 import styled from '@emotion/styled'
 import { ImageService, GameService } from '../../services'
-import { getSetting } from '../../common/utils'
+import { appendLastModified, getSetting, uploadErrorReason } from '../../common/utils'
 import { dialogTitleSx, inputSx, labelSx } from '../../common/modalStyles'
 import { useMobileFullScreenDialog } from '../../common/utils'
 
@@ -182,6 +182,7 @@ const ImageUploadCard = React.forwardRef(function ImageUploadCard(
       const file = pendingFiles[i]
       const formData = new FormData()
       formData.append('file', file)
+      appendLastModified(formData, file)
       if (game_id) formData.append('game_id', game_id)
       const folder = (uploadToGameFolder && selectedGame ? selectedGame.name : selectedFolder) || null
       if (folder) formData.append('folder', folder)
@@ -190,10 +191,8 @@ const ImageUploadCard = React.forwardRef(function ImageUploadCard(
         await uploadFn(formData, (progress) => setUploadProgress(progress))
         successCount++
       } catch (err) {
-        const serverMessage = err?.response?.data
-        const message = serverMessage
-          ? `Failed to upload ${file.name}: ${serverMessage}`
-          : `Failed to upload ${file.name}`
+        const reason = uploadErrorReason(err)
+        const message = reason ? `Failed to upload ${file.name}: ${reason}` : `Failed to upload ${file.name}`
         handleAlert({ type: 'error', message, open: true })
       }
     }

@@ -1,5 +1,6 @@
 import base64
 import io
+import re
 import time
 
 import pyotp
@@ -8,7 +9,7 @@ from flask import Blueprint, redirect, request, Response, jsonify, current_app, 
 from flask_login import login_user, logout_user, current_user, login_required
 from werkzeug.security import generate_password_hash, check_password_hash
 from .models import User
-from . import db
+from . import db, claim_sentinel
 from . import permissions as fs_permissions
 from .api.misc import _get_local_version, _fetch_release_notes
 from .api.decorators import demo_restrict
@@ -203,6 +204,14 @@ def mfa_disable():
 # @login_required while User.admin defaulted to True, so any signed-in non-admin
 # could create an administrator account.
 
+def _version_parts(version):
+    """A version like "1.9.2" as a tuple of ints for comparing, or None for
+    anything that is not plain dotted numbers."""
+    if not version or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', version):
+        return None
+    return tuple(int(x) for x in version.split('.'))
+
+
 @auth.route('/api/loggedin', methods=['GET'])
 def loggedin():
     login_allowed = is_ip_permitted(get_client_ip())
@@ -213,11 +222,19 @@ def loggedin():
     local_version = _get_local_version()
 
     latest_release = None
-    if release_data and local_version:
-        latest_version = release_data['version']
-        update_available = tuple(int(x) for x in latest_version.split('.')) > tuple(int(x) for x in local_version.split('.'))
+    latest_version = release_data['version'] if release_data else None
+    latest_parts = _version_parts(latest_version)
+    local_parts = _version_parts(local_version)
+    # A tag that is not plain dotted numbers (a prerelease such as 2.0.0-beta.1)
+    # is not offered as an update; parsing it used to fail this whole request.
+    if latest_parts and local_parts:
+        update_available = latest_parts > local_parts
         if update_available:
-            current_app.logger.info(f"A new version of Fireshare is available! You have v{local_version}, latest is v{latest_version}.")
+            # This endpoint runs on every page load, in every worker: say it once
+            # per server start for each new version. _version_parts only accepts
+            # digits and dots, so the version is safe in a file name.
+            if claim_sentinel(f"fireshare_update_notice_{latest_version}"):
+                current_app.logger.info(f"A new version of Fireshare is available! You have v{local_version}, latest is v{latest_version}.")
             is_dev = current_app.config.get('ENVIRONMENT') == 'dev'
             release_is_old_enough = is_dev
             if not is_dev:
