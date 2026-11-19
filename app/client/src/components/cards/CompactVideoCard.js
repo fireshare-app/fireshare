@@ -1,7 +1,6 @@
 import React from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Box, Chip, Typography, IconButton, Menu, MenuItem, ListItemIcon, Skeleton, Tooltip } from '@mui/material'
-import TagChip from '../ui/TagChip'
+import { Box, Typography, IconButton, Skeleton } from '@mui/material'
 import UploaderMention from '../user/UploaderMention'
 import LockIcon from '@mui/icons-material/Lock'
 import LinkIcon from '@mui/icons-material/Link'
@@ -14,8 +13,11 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import FolderIcon from '@mui/icons-material/Folder'
 import CheckIcon from '@mui/icons-material/Check'
 import CloseIcon from '@mui/icons-material/Close'
-import { CopyToClipboard } from 'react-copy-to-clipboard'
+import DownloadIcon from '@mui/icons-material/Download'
 import {
+  copyLink,
+  downloadFile,
+  downloadName,
   getPublicWatchUrl,
   toHHMMSS,
   getVideoUrl,
@@ -27,8 +29,9 @@ import {
 import { GameService, VideoService, ConfigService } from '../../services'
 import UpdateDetailsModal from '../modal/UpdateDetailsModal'
 import DeleteVideoModal from '../modal/DeleteVideoModal'
-import MoveVideoModal from '../modal/MoveVideoModal'
+import MoveMediaModal from '../modal/MoveMediaModal'
 import PasswordModal from '../modal/PasswordModal'
+import CardMenu from './CardMenu'
 import _ from 'lodash'
 
 const PURL = getPublicWatchUrl()
@@ -324,7 +327,7 @@ const CompactVideoCard = ({
   }
 
   const handlePrivacyChange = async (e) => {
-    e.stopPropagation()
+    e?.stopPropagation()
     try {
       await VideoService.updatePrivacy(video.video_id, !privateView)
       alertHandler?.({
@@ -425,8 +428,9 @@ const CompactVideoCard = ({
         videoId={video.video_id}
         alertHandler={alertHandler}
       />
-      <MoveVideoModal
+      <MoveMediaModal
         open={moveModalOpen}
+        mediaType="video"
         onClose={(result, newFolder) => {
           setMoveModalOpen(false)
           if (result === 'move') {
@@ -438,7 +442,7 @@ const CompactVideoCard = ({
             }
           }
         }}
-        video={intVideo}
+        media={intVideo}
         alertHandler={alertHandler}
       />
       <UpdateDetailsModal
@@ -620,7 +624,11 @@ const CompactVideoCard = ({
                 <Typography sx={{ fontWeight: 600, fontSize: 14, color: 'white', fontFamily: 'monospace' }}>
                   {viewCount}
                 </Typography>
-                <VisibilityIcon sx={{ fontSize: 18, color: privateView ? '#FF6B6B' : 'white' }} />
+                {privateView ? (
+                  <VisibilityOffIcon sx={{ fontSize: 18, color: '#FF6B6B' }} aria-label="private" />
+                ) : (
+                  <VisibilityIcon sx={{ fontSize: 18, color: 'white' }} />
+                )}
               </Box>
             </Box>
 
@@ -659,28 +667,22 @@ const CompactVideoCard = ({
                 transition: 'opacity 0.2s ease-in-out',
               }}
             >
-              <CopyToClipboard text={`${PURL}${video.video_id}`}>
-                <IconButton
-                  sx={{
-                    bgcolor: '#000000BF',
-                    '&:hover': {
-                      background: '#2684FF88',
-                    },
-                  }}
-                  aria-label="copy link"
-                  size="small"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    alertHandler?.({
-                      type: 'info',
-                      message: 'Link copied to clipboard',
-                      open: true,
-                    })
-                  }}
-                >
-                  <LinkIcon sx={{ color: 'white', fontSize: 24 }} />
-                </IconButton>
-              </CopyToClipboard>
+              <IconButton
+                sx={{
+                  bgcolor: '#000000BF',
+                  '&:hover': {
+                    background: '#2684FF88',
+                  },
+                }}
+                aria-label="copy link"
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  copyLink(`${PURL}${video.video_id}`, alertHandler)
+                }}
+              >
+                <LinkIcon sx={{ color: 'white', fontSize: 24 }} />
+              </IconButton>
             </Box>
 
             {/* Visibility toggle button - shows on hover when authenticated */}
@@ -1008,6 +1010,7 @@ const CompactVideoCard = ({
           {/* 3-dot menu toggle */}
           <IconButton
             size="small"
+            aria-label="More actions"
             onClick={(e) => {
               e.stopPropagation()
               setMenuAnchorEl(e.currentTarget)
@@ -1024,93 +1027,47 @@ const CompactVideoCard = ({
           </IconButton>
         </Box>
 
-        {/* Floating context menu */}
-        <Menu
+        <CardMenu
           anchorEl={menuAnchorEl}
-          open={menuOpen}
           onClose={() => setMenuAnchorEl(null)}
-          onClick={(e) => e.stopPropagation()}
-          transformOrigin={{ horizontal: 'right', vertical: 'top' }}
-          anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-          slotProps={{
-            paper: {
-              sx: {
-                bgcolor: '#0b132b',
-                border: '1px solid #FFFFFF14',
-                borderRadius: '10px',
-                minWidth: 160,
-                boxShadow: '0 8px 32px #00000099',
-                mt: 0.5,
-              },
-            },
-          }}
-        >
-          {[
-            {
-              label: 'Edit',
-              Icon: EditIcon,
-              color: '#FFFFFFE6',
-              requiresAuth: true,
-              onClick: () => setDetailsModalOpen(true),
-            },
+          authenticated={authenticated}
+          items={[
+            { label: 'Edit', Icon: EditIcon, requiresAuth: true, onClick: () => setDetailsModalOpen(true) },
             {
               label: 'Transcode',
               Icon: SlowMotionVideoIcon,
-              color: '#FFFFFFE6',
               requiresAuth: true,
               hidden: !getSetting('ui_config')?.transcoding_enabled,
               onClick: handleTranscode,
             },
+            { label: 'Copy Link', Icon: LinkIcon, onClick: () => copyLink(`${PURL}${video.video_id}`, alertHandler) },
+            { label: 'Move...', Icon: FolderIcon, requiresAuth: true, onClick: () => setMoveModalOpen(true) },
             {
-              label: 'Copy Link',
-              Icon: LinkIcon,
-              color: '#FFFFFFE6',
-              onClick: () => {
-                navigator.clipboard.writeText(`${PURL}${video.video_id}`)
-                alertHandler?.({ type: 'info', message: 'Link copied to clipboard', open: true })
-              },
+              label: privateView ? 'Make public' : 'Make private',
+              Icon: privateView ? VisibilityIcon : VisibilityOffIcon,
+              requiresAuth: true,
+              onClick: handlePrivacyChange,
             },
             {
-              label: 'Move...',
-              Icon: FolderIcon,
-              color: '#FFFFFFE6',
-              requiresAuth: true,
-              onClick: () => setMoveModalOpen(true),
+              label: 'Download',
+              Icon: DownloadIcon,
+              // A password-protected video downloads only once it is unlocked.
+              hidden: isLocked,
+              onClick: () =>
+                downloadFile(
+                  getVideoUrl(video.video_id, 'original', video.extension),
+                  downloadName(title, video.extension),
+                ),
             },
             {
               label: 'Delete',
               Icon: DeleteOutlineIcon,
-              color: '#EF5350',
               danger: true,
               requiresAuth: true,
               onClick: () => setDeleteModalOpen(true),
             },
-          ]
-            .filter((item) => !item.hidden)
-            .filter((item) => !item.requiresAuth || authenticated)
-            .map(({ label, Icon, color, danger, onClick }) => (
-              <MenuItem
-                key={label}
-                onClick={() => {
-                  onClick?.()
-                  setMenuAnchorEl(null)
-                }}
-                sx={{
-                  gap: 1.5,
-                  py: 1.25,
-                  fontSize: 14,
-                  color,
-                  bgcolor: danger ? '#EF535012' : 'transparent',
-                  '&:hover': { bgcolor: danger ? '#EF535028' : '#FFFFFF12' },
-                }}
-              >
-                <ListItemIcon sx={{ minWidth: 0, color: danger ? '#EF5350' : 'white' }}>
-                  <Icon fontSize="small" />
-                </ListItemIcon>
-                {label}
-              </MenuItem>
-            ))}
-        </Menu>
+          ]}
+        />
       </Box>
     </>
   )

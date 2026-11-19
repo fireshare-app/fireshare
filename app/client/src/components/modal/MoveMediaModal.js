@@ -2,38 +2,49 @@ import React from 'react'
 import { Modal, Box, Typography, Button, Stack } from '@mui/material'
 import FolderIcon from '@mui/icons-material/Folder'
 import Select from 'react-select'
-import { VideoService } from '../../services'
+import { ImageService, VideoService } from '../../services'
 import { labelSx, dialogPaperSx } from '../../common/modalStyles'
 import { folderSelectTheme as selectFolderTheme } from '../../common/reactSelectThemes'
 
-const MoveVideoModal = ({ open, onClose, video, alertHandler }) => {
+// Moves one video or image into another folder of its library. mediaType picks
+// which library and which endpoint; the folder list comes from the same place the
+// upload dialogs get theirs.
+const MoveMediaModal = ({ open, onClose, media, mediaType = 'video', alertHandler }) => {
+  const isImage = mediaType === 'image'
+  const Service = isImage ? ImageService : VideoService
+  const root = isImage ? 'images' : 'videos'
+  const noun = isImage ? 'Image' : 'Clip'
   const [folders, setFolders] = React.useState([])
   const [targetFolder, setTargetFolder] = React.useState(null)
   const [loading, setLoading] = React.useState(false)
 
-  const currentFolder = video?.path ? video.path.split('/')[0] : ''
+  // A file at the top of the library has no folder in its path.
+  const currentFolder = media?.path?.includes('/') ? media.path.split('/').slice(0, -1).join('/') : ''
+  const location = currentFolder ? `/${root}/${currentFolder}/` : `/${root}/`
 
   React.useEffect(() => {
     if (!open) return
     setTargetFolder(null)
     setLoading(false)
-    VideoService.getUploadFolders()
+    Service.getUploadFolders()
       .then((res) => {
         const all = res.data?.folders || []
-        setFolders(all.filter((f) => f !== currentFolder).map((f) => ({ value: f, label: `/videos/${f}/` })))
+        setFolders(all.filter((f) => f !== currentFolder).map((f) => ({ value: f, label: `/${root}/${f}/` })))
       })
       .catch(() => setFolders([]))
-  }, [open, currentFolder])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, currentFolder, mediaType])
 
   const handleMove = async () => {
     if (!targetFolder) return
     setLoading(true)
     try {
-      await VideoService.move(video.video_id, targetFolder.value)
-      alertHandler?.({ open: true, type: 'success', message: `Clip moved to "${targetFolder.value}".` })
-      onClose('move', targetFolder.value)
+      const id = isImage ? media.image_id : media.video_id
+      const res = await Service.move(id, targetFolder.value)
+      alertHandler?.({ open: true, type: 'success', message: `${noun} moved to "${targetFolder.value}".` })
+      onClose('move', targetFolder.value, res?.data?.path)
     } catch (err) {
-      alertHandler?.({ open: true, type: 'error', message: err.response?.data || 'Failed to move clip.' })
+      alertHandler?.({ open: true, type: 'error', message: err.response?.data || `Failed to move ${noun.toLowerCase()}.` })
       setLoading(false)
     }
   }
@@ -74,7 +85,7 @@ const MoveVideoModal = ({ open, onClose, video, alertHandler }) => {
               color: '#FFFFFFCC',
             }}
           >
-            {`/videos/${currentFolder}/`}
+            {location}
           </Box>
         </Box>
 
@@ -125,4 +136,4 @@ const MoveVideoModal = ({ open, onClose, video, alertHandler }) => {
   )
 }
 
-export default MoveVideoModal
+export default MoveMediaModal

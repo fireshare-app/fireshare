@@ -91,24 +91,87 @@ export const toHHMMSS = (secs) => {
 export const copyToClipboard = (textToCopy) => {
   // navigator clipboard api needs a secure context (https)
   if (navigator.clipboard && window.isSecureContext) {
-    // navigator clipboard api method'
     return navigator.clipboard.writeText(textToCopy)
-  } else {
-    // text area method
-    let textArea = document.createElement('textarea')
-    textArea.value = textToCopy
-    // make the textarea out of viewport
-    textArea.style.position = 'fixed'
-    textArea.style.left = '-999999px'
-    textArea.style.top = '-999999px'
-    document.body.appendChild(textArea)
-    textArea.focus()
-    textArea.select()
-    return new Promise((res, rej) => {
-      // here the magic happens
-      document.execCommand('copy') ? res() : rej()
-      textArea.remove()
-    })
+  }
+  // Over plain HTTP, copy from an offscreen textarea. It goes inside the open
+  // modal or menu, if there is one: a modal's focus trap pulls focus back out of
+  // anything appended to <body>, and the copy then silently copies nothing.
+  const host = document.activeElement?.closest?.('[role="presentation"], [role="dialog"]') || document.body
+  const textArea = document.createElement('textarea')
+  textArea.value = textToCopy
+  textArea.setAttribute('readonly', '')
+  textArea.style.position = 'fixed'
+  textArea.style.left = '-999999px'
+  textArea.style.top = '-999999px'
+  host.appendChild(textArea)
+  const previouslyFocused = document.activeElement
+  textArea.focus()
+  textArea.select()
+  return new Promise((res, rej) => {
+    let copied = false
+    try {
+      copied = document.execCommand('copy')
+    } catch (_) {
+      copied = false
+    }
+    textArea.remove()
+    previouslyFocused?.focus?.({ preventScroll: true })
+    copied ? res() : rej(new Error('copy failed'))
+  })
+}
+
+// Copies a share link and says whether it worked. The toast used to report
+// success even when the browser had refused the copy.
+export const copyLink = (url, alertHandler) =>
+  Promise.resolve()
+    .then(() => copyToClipboard(url))
+    .then(
+      () => alertHandler?.({ type: 'info', message: 'Link copied to clipboard', open: true }),
+      () => alertHandler?.({ type: 'error', message: "Couldn't copy the link. Your browser blocked it.", open: true }),
+    )
+
+// Saves a same-origin file through the browser's download flow.
+export const downloadFile = (url, filename = '') => {
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+// The name a download is saved under: the title where there is one, without
+// characters a file system would refuse, plus the file's own extension.
+export const downloadName = (title, extension) => {
+  const safe = (title || '').replace(/[/\\?%*:|"<>\x00-\x1F]/g, '-').trim()
+  return safe ? `${safe}${extension || ''}` : ''
+}
+
+// What a card or modal calls a piece of media with no title: its file name.
+export const mediaTitle = (media) =>
+  media?.info?.title ||
+  (media?.path
+    ? media.path
+        .split('/')
+        .pop()
+        .replace(/\.[^/.]+$/, '')
+    : 'Untitled')
+
+// Merges what the image modal reports on close into an image from a list.
+export const applyImageUpdate = (image, update) => {
+  if (!update) return image
+  return {
+    ...image,
+    info: {
+      ...image.info,
+      ...(update.title !== undefined && { title: update.title }),
+      ...(update.description !== undefined && { description: update.description }),
+      ...(update.private !== undefined && { private: update.private }),
+    },
+    ...(update.game !== undefined && { game: update.game }),
+    ...(update.tags !== undefined && { tags: update.tags }),
+    ...(update.created_at !== undefined && { created_at: update.created_at }),
+    ...(update.uploader !== undefined && { uploader: update.uploader }),
   }
 }
 

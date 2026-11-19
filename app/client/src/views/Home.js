@@ -3,9 +3,10 @@ import ReactDOM from 'react-dom'
 import { Box, ToggleButton, ToggleButtonGroup, Typography, useMediaQuery, useTheme } from '@mui/material'
 import Select from 'react-select'
 import CompactVideoCard from '../components/cards/CompactVideoCard'
-import MasonryImageCard from '../components/cards/MasonryImageCard'
+import MasonryImageCard, { IMAGE_CARD_FOOTER_HEIGHT } from '../components/cards/MasonryImageCard'
 import VideoModal from '../components/modal/VideoModal'
-import EditImageModal from '../components/modal/EditImageModal'
+import ImageModal from '../components/modal/ImageModal'
+import { applyImageUpdate } from '../common/utils'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import SnackbarAlert from '../components/alert/SnackbarAlert'
 import ToolbarFilterMenu from '../components/nav/ToolbarFilterMenu'
@@ -70,7 +71,7 @@ const estimateHeight = (item, columnWidth) => {
   if (item.kind === 'video') return Math.round((columnWidth * 9) / 16) + VIDEO_INFO_HEIGHT
   const w = item.raw.info?.width
   const h = item.raw.info?.height
-  return Math.round(w && h ? (columnWidth * h) / w : (columnWidth * 9) / 16)
+  return Math.round(w && h ? (columnWidth * h) / w : (columnWidth * 9) / 16) + IMAGE_CARD_FOOTER_HEIGHT
 }
 
 // Mounts its card once it comes within reach of the viewport. Until then a box
@@ -150,6 +151,7 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
   const [toolbarTarget, setToolbarTarget] = React.useState(null)
   const [videoModal, setVideoModal] = React.useState({ open: false, id: null })
   const [modalImage, setModalImage] = React.useState(null)
+  const [modalImageEdit, setModalImageEdit] = React.useState(false)
   const [width, setWidth] = React.useState(0)
   const containerRef = React.useRef()
   const countRef = React.useRef(0)
@@ -306,7 +308,10 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
 
   const handleAlert = React.useCallback((a) => setAlert(a), [])
   const openVideo = React.useCallback((id) => setVideoModal({ open: true, id }), [])
-  const openImage = React.useCallback((image) => setModalImage(image), [])
+  const openImage = React.useCallback((image, options) => {
+    setModalImage(image)
+    setModalImageEdit(Boolean(options?.edit))
+  }, [])
   const removeVideo = React.useCallback((id) => setVideos((prev) => prev.filter((v) => v.video_id !== id)), [])
   const removeImage = React.useCallback((id) => setImages((prev) => prev.filter((i) => i.image_id !== id)), [])
 
@@ -335,17 +340,7 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
         prev.map((img) =>
           img.image_id !== modalImage.image_id
             ? img
-            : {
-                ...img,
-                info: {
-                  ...img.info,
-                  ...(update.title !== undefined && { title: update.title }),
-                  ...(update.private !== undefined && { private: update.private }),
-                },
-                ...(update.game !== undefined && { game: update.game }),
-                ...(update.created_at !== undefined && { created_at: update.created_at }),
-                ...(update.uploader !== undefined && { uploader: update.uploader }),
-              },
+            : applyImageUpdate(img, update),
         ),
       )
     }
@@ -468,10 +463,11 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
         onPrev={() => stepVideo(-1)}
         onSuggestionSelect={(id) => setVideoModal({ open: true, id })}
       />
-      <EditImageModal
+      <ImageModal
         open={Boolean(modalImage)}
         onClose={handleImageModalClose}
         image={modalImage}
+        startInEditMode={modalImageEdit}
         alertHandler={setAlert}
         authenticated={authenticated}
         onNext={() => stepImage(1)}

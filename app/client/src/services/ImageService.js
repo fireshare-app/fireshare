@@ -34,6 +34,12 @@ const service = {
   delete(id) {
     return Api().delete(`/api/image/delete/${id}`)
   },
+  move(id, folder) {
+    return Api().post(`/api/image/move/${id}`, { folder })
+  },
+  getOriginalUrl(id) {
+    return `/api/image/original?id=${id}`
+  },
   upload(formData, uploadProgress) {
     return Api().post('/api/upload/image', formData, {
       timeout: 999999999,
