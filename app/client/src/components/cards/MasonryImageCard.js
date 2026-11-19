@@ -7,7 +7,7 @@ import MoreVertIcon from '@mui/icons-material/MoreVert'
 import CheckIcon from '@mui/icons-material/Check'
 import ImageIcon from '@mui/icons-material/Image'
 import { getImageThumbnailUrl, mediaTitle } from '../../common/utils'
-import { ImageService } from '../../services'
+import TagChip from '../ui/TagChip'
 import UploaderMention from '../user/UploaderMention'
 import CardMenu from './CardMenu'
 import useImageCardActions from './useImageCardActions'
@@ -15,31 +15,22 @@ import useImageCardActions from './useImageCardActions'
 const IMAGE_VERSION = Date.now()
 const APP_ORIGIN = window.location.origin
 
-// The footer under every image card has a fixed height, so a waterfall can work
-// out a card's height from the image's shape before the card mounts, and a
-// placeholder of that height holds the column steady while it loads.
-export const IMAGE_CARD_FOOTER_HEIGHT = 88
+// Phones and tablets can't hover, so they get the ⋮ button on the image itself.
+const NO_HOVER = '@media (hover: none)'
 
 export const imageAspectRatio = (image) =>
   image.info?.width && image.info?.height ? `${image.info.width} / ${image.info.height}` : '16 / 9'
 
-const badgeSx = {
-  position: 'absolute',
-  bgcolor: '#000000BF',
-  borderRadius: '4px',
-  px: 0.75,
-  py: 0.25,
-}
-
-const hoverButtonSx = {
+const darkButtonSx = {
   bgcolor: '#000000BF',
   '&:hover': { background: '#2684FF88' },
 }
 
 /**
- * An image in a waterfall. The image keeps its own shape, uncropped; under it is
- * the same footer a video card has (game, title, date, uploader and the ⋮ menu),
- * and on it the same badges and hover buttons.
+ * An image in a waterfall: the whole card is the image, at its own shape. On
+ * hover it shows what a video card shows in its footer (game, title, date,
+ * uploader and the ⋮ menu) over the bottom of the image, with the view count,
+ * visibility toggle and copy link along the top.
  */
 const MasonryImageCard = ({
   image,
@@ -55,9 +46,6 @@ const MasonryImageCard = ({
   showTypeIndicator = false,
 }) => {
   const [thumbnailHover, setThumbnailHover] = React.useState(false)
-  const [title, setTitle] = React.useState(mediaTitle(image))
-  const [editingTitle, setEditingTitle] = React.useState(false)
-  const [titleDraft, setTitleDraft] = React.useState(title)
   const [menuAnchorEl, setMenuAnchorEl] = React.useState(null)
   const [imgLoaded, setImgLoaded] = React.useState(false)
   const [imgRetryKey, setImgRetryKey] = React.useState(0)
@@ -73,11 +61,6 @@ const MasonryImageCard = ({
     removeOnMove,
   })
 
-  // Re-sync when the image prop changes (an edit saved in the image modal).
-  React.useEffect(() => {
-    setTitle(mediaTitle(image))
-  }, [image.info?.title, image.path]) // eslint-disable-line react-hooks/exhaustive-deps
-
   React.useEffect(() => {
     return () => {
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current)
@@ -91,52 +74,36 @@ const MasonryImageCard = ({
     retryTimeoutRef.current = setTimeout(() => setImgRetryKey((k) => k + 1), 4000)
   }, [])
 
-  const handleTitleSave = async () => {
-    setEditingTitle(false)
-    const trimmed = titleDraft.trim() || mediaTitle({ path: image.path })
-    if (trimmed === title) return
-    const previous = title
-    setTitle(trimmed)
-    try {
-      await ImageService.updateDetails(image.image_id, { title: trimmed })
-    } catch (err) {
-      setTitle(previous)
-      alertHandler?.({ open: true, type: 'error', message: 'Failed to save title.' })
-    }
+  const openMenu = (e) => {
+    e.stopPropagation()
+    setMenuAnchorEl(e.currentTarget)
   }
 
+  const title = mediaTitle(image)
   const game = image.game
+  const tags = image.tags || []
   const viewCount = image.view_count || 0
   const thumbnailUrl = getImageThumbnailUrl(image.image_id, IMAGE_VERSION)
+  // The overlay stays up while its menu is open, so the menu keeps its anchor.
+  const showDetails = thumbnailHover || Boolean(menuAnchorEl)
+  const hoverFade = { opacity: showDetails ? 1 : 0, transition: 'opacity 0.2s ease-in-out' }
 
   return (
     <Box
       sx={{
         width: '100%',
+        height: '100%',
         bgcolor: '#00000066',
-        borderRadius: { xs: 0, sm: '12px' },
+        borderRadius: { xs: 0, sm: '8px' },
         overflow: 'hidden',
         position: 'relative',
         display: 'flex',
         flexDirection: 'column',
+        border: imgLoaded ? '2px solid #000' : 'none',
       }}
     >
-      {selected && (
-        <Box
-          sx={{
-            position: 'absolute',
-            inset: 0,
-            border: '2px solid #2684FF',
-            borderRadius: { xs: 0, sm: '12px' },
-            zIndex: 10,
-            pointerEvents: 'none',
-          }}
-        />
-      )}
-
-      {/* Image, at its own aspect ratio */}
       <Box
-        sx={{ position: 'relative', overflow: 'hidden', cursor: 'pointer', aspectRatio: imageAspectRatio(image) }}
+        sx={{ overflow: 'hidden', position: 'relative', lineHeight: 0, cursor: 'pointer' }}
         onClick={() => openImageHandler?.(image)}
         onMouseEnter={() => setThumbnailHover(true)}
         onMouseLeave={() => setThumbnailHover(false)}
@@ -147,7 +114,7 @@ const MasonryImageCard = ({
             animation="wave"
             width="100%"
             height="100%"
-            sx={{ position: 'absolute', inset: 0, bgcolor: 'rgba(30, 60, 130, 0.4)' }}
+            sx={{ aspectRatio: imageAspectRatio(image), bgcolor: 'transparent' }}
           />
         )}
         <img
@@ -156,86 +123,229 @@ const MasonryImageCard = ({
           alt={title}
           onLoad={() => setImgLoaded(true)}
           onError={handleImgError}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-            display: 'block',
-            opacity: imgLoaded ? 1 : 0,
-            transition: 'opacity 0.4s ease',
-          }}
+          style={{ width: '100%', display: imgLoaded ? 'block' : 'none' }}
         />
 
-        {/* Views, bottom left. Gives way to the visibility toggle on hover. */}
-        <Box
-          sx={{
-            ...badgeSx,
-            bottom: 8,
-            left: 8,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.5,
-            opacity: thumbnailHover ? 0 : 1,
-            transition: 'opacity 0.2s ease-in-out',
-          }}
-        >
-          <Typography sx={{ fontWeight: 600, fontSize: 14, color: 'white', fontFamily: 'monospace' }}>
-            {viewCount}
-          </Typography>
-          {privateView ? (
-            <VisibilityOffIcon sx={{ fontSize: 18, color: '#FF6B6B' }} aria-label="private" />
-          ) : (
-            <VisibilityIcon sx={{ fontSize: 18, color: 'white' }} />
-          )}
-        </Box>
-
-        {/* Photo mark, bottom right: where a video card shows its duration */}
-        {showTypeIndicator && (
-          <Box sx={{ ...badgeSx, bottom: 8, right: 8, py: 0.5, display: 'flex', pointerEvents: 'none' }}>
-            <ImageIcon sx={{ fontSize: 18, color: 'white' }} aria-label="photo" />
-          </Box>
-        )}
-
-        {/* Copy link, top right on hover */}
+        {/* Top left on hover: view count and the visibility toggle */}
         <Box
           sx={{
             position: 'absolute',
             top: 8,
-            right: 8,
-            opacity: thumbnailHover ? 1 : 0,
-            transition: 'opacity 0.2s ease-in-out',
+            left: 8,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.5,
+            zIndex: 2,
+            ...hoverFade,
           }}
         >
-          <IconButton sx={hoverButtonSx} aria-label="copy link" size="small" onClick={copy}>
-            <LinkIcon sx={{ color: 'white', fontSize: 24 }} />
-          </IconButton>
-        </Box>
-
-        {/* Visibility toggle, bottom left on hover */}
-        {authenticated && (
           <Box
             sx={{
-              position: 'absolute',
-              bottom: 8,
-              left: 8,
-              opacity: thumbnailHover ? 1 : 0,
-              transition: 'opacity 0.2s ease-in-out',
+              bgcolor: '#000000BF',
+              borderRadius: '4px',
+              px: 0.75,
+              py: 0.25,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
             }}
           >
+            <Typography sx={{ fontWeight: 600, fontSize: 14, color: 'white', fontFamily: 'monospace' }}>
+              {viewCount}
+            </Typography>
+            {privateView ? (
+              <VisibilityOffIcon sx={{ fontSize: 20, color: '#FF6B6B' }} aria-label="private" />
+            ) : (
+              <VisibilityIcon sx={{ fontSize: 20, color: 'white' }} />
+            )}
+          </Box>
+          {authenticated && (
             <IconButton
-              sx={{ ...hoverButtonSx, '&:hover': { background: privateView ? '#FF232360' : '#2684FF88' } }}
+              sx={{ ...darkButtonSx, '&:hover': { background: privateView ? '#FF232360' : '#2684FF88' } }}
               aria-label="toggle visibility"
               size="small"
               onClick={togglePrivacy}
             >
               {privateView ? (
-                <VisibilityOffIcon sx={{ color: '#FF6B6B', fontSize: 24 }} />
+                <VisibilityOffIcon sx={{ color: '#FF6B6B', fontSize: 20 }} />
               ) : (
-                <VisibilityIcon sx={{ color: 'white', fontSize: 24 }} />
+                <VisibilityIcon sx={{ color: 'white', fontSize: 20 }} />
               )}
             </IconButton>
+          )}
+        </Box>
+
+        {/* Photo mark, top right until hover, when it's among videos */}
+        {showTypeIndicator && (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 8,
+              right: 8,
+              width: 28,
+              height: 28,
+              borderRadius: '6px',
+              bgcolor: '#000000A6',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              pointerEvents: 'none',
+              zIndex: 1,
+              opacity: showDetails ? 0 : 1,
+              transition: 'opacity 0.2s ease-in-out',
+              [NO_HOVER]: { display: 'none' },
+            }}
+          >
+            <ImageIcon sx={{ fontSize: 18, color: 'rgba(255,255,255,0.85)' }} />
           </Box>
         )}
+
+        {/* Top right on hover: copy link. Without hover, the ⋮ menu instead. */}
+        <Box
+          sx={{
+            position: 'absolute',
+            top: 8,
+            right: 8,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 0.5,
+            zIndex: 2,
+            ...hoverFade,
+            [NO_HOVER]: { opacity: 1 },
+          }}
+        >
+          <IconButton
+            sx={{ ...darkButtonSx, [NO_HOVER]: { display: 'none' } }}
+            aria-label="copy link"
+            size="small"
+            onClick={copy}
+          >
+            <LinkIcon sx={{ color: 'white', fontSize: 20 }} />
+          </IconButton>
+          <IconButton
+            sx={{ ...darkButtonSx, display: 'none', [NO_HOVER]: { display: 'inline-flex' } }}
+            aria-label="More actions"
+            size="small"
+            onClick={openMenu}
+          >
+            <MoreVertIcon sx={{ color: 'white', fontSize: 20 }} />
+          </IconButton>
+        </Box>
+
+        {/* Bottom on hover: the same details a video card's footer shows */}
+        <Box
+          sx={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 65%, transparent 100%)',
+            px: 1.5,
+            pb: 1.25,
+            pt: 5,
+            lineHeight: 'normal',
+            pointerEvents: showDetails ? 'auto' : 'none',
+            ...hoverFade,
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'stretch', gap: 1.5 }}>
+            {game && (
+              <Box
+                component={game.steamgriddb_id ? 'a' : 'div'}
+                href={game.steamgriddb_id ? `${APP_ORIGIN}/games/${game.steamgriddb_id}` : undefined}
+                onClick={(e) => e.stopPropagation()}
+                sx={{ flexShrink: 0, lineHeight: 0, alignSelf: 'flex-start', width: 40, height: 40 }}
+              >
+                {game.icon_url && (
+                  <img
+                    src={game.icon_url}
+                    alt={game.name}
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none'
+                    }}
+                    style={{ width: 40, height: 40, objectFit: 'contain', display: 'block' }}
+                  />
+                )}
+              </Box>
+            )}
+
+            <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+              <Typography
+                title={title}
+                sx={{
+                  fontWeight: 700,
+                  fontSize: 16,
+                  lineHeight: 1.3,
+                  color: 'white',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {title}
+              </Typography>
+              {game?.name && (
+                <Typography
+                  component={game.steamgriddb_id ? 'a' : 'span'}
+                  href={game.steamgriddb_id ? `${APP_ORIGIN}/games/${game.steamgriddb_id}` : undefined}
+                  onClick={(e) => e.stopPropagation()}
+                  sx={{
+                    mt: 0.25,
+                    fontSize: 14,
+                    lineHeight: 1.3,
+                    color: '#FFFFFFB3',
+                    display: 'block',
+                    textDecoration: 'none',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    ...(game.steamgriddb_id && { '&:hover': { color: '#3399FF', textDecoration: 'underline' } }),
+                  }}
+                >
+                  {game.name}
+                </Typography>
+              )}
+              {(image.created_at || (image.uploader && !hideUploader)) && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 'auto', pt: 0.5, minWidth: 0 }}>
+                  {image.created_at && (
+                    <Typography sx={{ fontSize: 14, color: '#FFFFFFB3', flexShrink: 0 }}>
+                      {new Date(image.created_at).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                      })}
+                    </Typography>
+                  )}
+                  {!hideUploader && <UploaderMention uploader={image.uploader} sx={{ ml: 'auto' }} />}
+                </Box>
+              )}
+            </Box>
+
+            <IconButton
+              size="small"
+              aria-label="More actions"
+              onClick={openMenu}
+              sx={{
+                alignSelf: 'flex-start',
+                color: menuAnchorEl ? 'primary.main' : '#FFFFFFB3',
+                transition: 'color 0.2s',
+                p: 0.5,
+                mt: 0.25,
+                '&:hover': { color: 'white' },
+              }}
+            >
+              <MoreVertIcon sx={{ fontSize: 24 }} />
+            </IconButton>
+          </Box>
+
+          {tags.length > 0 && (
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.75 }}>
+              {tags.map((tag) => (
+                <TagChip key={tag.id} name={tag.name} color={tag.color} size="small" />
+              ))}
+            </Box>
+          )}
+        </Box>
 
         {/* Selection checkbox */}
         {editMode && (
@@ -260,162 +370,6 @@ const MasonryImageCard = ({
             {selected && <CheckIcon sx={{ fontSize: 20, color: 'white' }} />}
           </Box>
         )}
-      </Box>
-
-      {/* Footer: the same layout as a video card's */}
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'stretch',
-          height: IMAGE_CARD_FOOTER_HEIGHT,
-          boxSizing: 'border-box',
-          pt: 1.5,
-          px: 1.5,
-          pb: 1.5,
-          gap: 1.5,
-          overflow: 'hidden',
-        }}
-      >
-        {game && (
-          <Box
-            component={game.steamgriddb_id ? 'a' : 'div'}
-            href={game.steamgriddb_id ? `${APP_ORIGIN}/games/${game.steamgriddb_id}` : undefined}
-            onClick={(e) => e.stopPropagation()}
-            sx={{ flexShrink: 0, lineHeight: 0, alignSelf: 'flex-start', width: 40, height: 40 }}
-          >
-            {game.icon_url && (
-              <img
-                src={game.icon_url}
-                alt={game.name}
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none'
-                }}
-                style={{ width: 40, height: 40, objectFit: 'contain', display: 'block' }}
-              />
-            )}
-          </Box>
-        )}
-
-        <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          {editingTitle ? (
-            <input
-              autoFocus
-              aria-label="Title"
-              value={titleDraft}
-              onChange={(e) => setTitleDraft(e.target.value)}
-              onBlur={handleTitleSave}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') e.target.blur()
-                if (e.key === 'Escape') {
-                  setTitleDraft(title)
-                  setEditingTitle(false)
-                }
-              }}
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                width: '100%',
-                background: '#FFFFFF1F',
-                border: 'none',
-                borderRadius: '4px',
-                outline: 'none',
-                color: 'white',
-                fontWeight: 700,
-                fontSize: 16,
-                lineHeight: 1.3,
-                padding: '2px 4px',
-                boxSizing: 'border-box',
-                fontFamily: 'inherit',
-              }}
-            />
-          ) : (
-            <Typography
-              title={title}
-              onDoubleClick={
-                authenticated
-                  ? (e) => {
-                      e.stopPropagation()
-                      setTitleDraft(title)
-                      setEditingTitle(true)
-                    }
-                  : undefined
-              }
-              sx={{
-                fontWeight: 700,
-                fontSize: 16,
-                lineHeight: 1.3,
-                color: 'white',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                ...(authenticated && {
-                  cursor: 'text',
-                  borderRadius: '4px',
-                  px: '4px',
-                  mx: '-4px',
-                  transition: 'background 0.15s',
-                  '&:hover': { background: '#FFFFFF1F' },
-                }),
-              }}
-            >
-              {title}
-            </Typography>
-          )}
-
-          {game?.name && (
-            <Typography
-              component={game.steamgriddb_id ? 'a' : 'span'}
-              href={game.steamgriddb_id ? `${APP_ORIGIN}/games/${game.steamgriddb_id}` : undefined}
-              onClick={(e) => e.stopPropagation()}
-              sx={{
-                mt: 0.25,
-                fontSize: 14,
-                lineHeight: 1.3,
-                color: '#FFFFFFB3',
-                display: 'block',
-                textDecoration: 'none',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                ...(game.steamgriddb_id && { '&:hover': { color: '#3399FF', textDecoration: 'underline' } }),
-              }}
-            >
-              {game.name}
-            </Typography>
-          )}
-
-          {(image.created_at || (image.uploader && !hideUploader)) && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 'auto', pt: 0.5, minWidth: 0 }}>
-              {image.created_at && (
-                <Typography sx={{ fontSize: 14, color: '#FFFFFF80', flexShrink: 0 }}>
-                  {new Date(image.created_at).toLocaleDateString('en-US', {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                  })}
-                </Typography>
-              )}
-              {!hideUploader && <UploaderMention uploader={image.uploader} sx={{ ml: 'auto' }} />}
-            </Box>
-          )}
-        </Box>
-
-        <IconButton
-          size="small"
-          aria-label="More actions"
-          onClick={(e) => {
-            e.stopPropagation()
-            setMenuAnchorEl(e.currentTarget)
-          }}
-          sx={{
-            alignSelf: 'flex-start',
-            color: menuAnchorEl ? 'primary.main' : '#FFFFFF59',
-            transition: 'color 0.2s',
-            p: 0.5,
-            mt: 0.25,
-          }}
-        >
-          <MoreVertIcon sx={{ fontSize: 24 }} />
-        </IconButton>
       </Box>
 
       <CardMenu
