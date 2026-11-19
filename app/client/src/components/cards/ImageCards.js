@@ -4,8 +4,11 @@ import { Box, Button, Typography } from '@mui/material'
 import SnackbarAlert from '../alert/SnackbarAlert'
 import ImageIcon from '@mui/icons-material/Image'
 import SensorsIcon from '@mui/icons-material/Sensors'
-import MasonryImageCard from './MasonryImageCard'
+import MasonryImageCard, { IMAGE_CARD_FOOTER_HEIGHT, imageAspectRatio } from './MasonryImageCard'
 import { ImageService } from '../../services'
+
+// Matches the gap between cards on the Home feed and the video grids.
+const GAP = 12
 
 // Stable per-image delay derived from image ID so it doesn't change across re-renders
 function stableDelay(id) {
@@ -29,6 +32,7 @@ const LazyImageCard = ({
   editMode,
   selected,
   onSelect,
+  removeOnMove,
 }) => {
   const [activated, setActivated] = React.useState(false)
   const ref = React.useRef()
@@ -84,23 +88,16 @@ const LazyImageCard = ({
     }
   }, [activated, listVersion])
 
-  const w = img.info?.width
-  const h = img.info?.height
-  const ratio = w && h ? `${w} / ${h}` : '16 / 9'
-
+  // The placeholder is the card's exact height (the image's shape plus the fixed
+  // footer), so a card that mounts or unloads never moves the columns.
   return (
-    <div
-      ref={ref}
-      style={{
-        breakInside: 'avoid',
-        marginBottom: 8,
-        borderRadius: { xs: 0, sm: '8px' },
-        width: '100%',
-        aspectRatio: ratio,
-        overflow: 'hidden',
-        backgroundColor: activated ? 'transparent' : 'rgba(30, 60, 130, 0.12)',
-      }}
-    >
+    <div ref={ref} style={{ breakInside: 'avoid', marginBottom: GAP, width: '100%' }}>
+      {!activated && (
+        <div style={{ borderRadius: 12, overflow: 'hidden', backgroundColor: 'rgba(30, 60, 130, 0.12)' }}>
+          <div style={{ aspectRatio: imageAspectRatio(img) }} />
+          <div style={{ height: IMAGE_CARD_FOOTER_HEIGHT }} />
+        </div>
+      )}
       {activated && (
         <motion.div
           initial={{ opacity: 0, filter: 'blur(8px)' }}
@@ -118,6 +115,7 @@ const LazyImageCard = ({
             selected={selected}
             onSelect={onSelect}
             hideUploader={hideUploader}
+            removeOnMove={removeOnMove}
           />
         </motion.div>
       )}
@@ -137,6 +135,8 @@ const ImageCards = React.memo(
     selectedImages,
     onImageSelect,
     hideUploader = false,
+    // On a page that lists one folder, an image moved elsewhere leaves the page.
+    removeOnMove = false,
   }) => {
     const [imgs, setImages] = React.useState(images || [])
     const [alert, setAlert] = React.useState({ open: false })
@@ -162,7 +162,7 @@ const ImageCards = React.memo(
         const width = entry?.contentRect?.width || 0
         if (!width) return
         const colWidth = size || 300
-        const cols = Math.max(1, Math.floor((width + 16) / (colWidth + 16)))
+        const cols = Math.max(1, Math.floor((width + GAP) / (colWidth + GAP)))
         setColumnCount(cols)
       })
 
@@ -176,8 +176,8 @@ const ImageCards = React.memo(
       setImages((prev) => prev.filter((img) => img.image_id !== id))
     }
 
-    const openImage = (img) => {
-      if (onImageOpen) onImageOpen(img)
+    const openImage = (img, options) => {
+      if (onImageOpen) onImageOpen(img, options)
     }
 
     const handleScan = () => {
@@ -259,7 +259,7 @@ const ImageCards = React.memo(
             ref={containerRef}
             sx={{
               columnCount: columnCount,
-              columnGap: '8px',
+              columnGap: `${GAP}px`,
             }}
           >
             {imgs.map((img) => (
@@ -267,7 +267,9 @@ const ImageCards = React.memo(
                 key={img.image_id}
                 img={img}
                 listVersion={listVersion}
-                openImageHandler={() => (editMode ? onImageSelect?.(img.image_id) : openImage(img))}
+                openImageHandler={(image, options) =>
+                  editMode && !options ? onImageSelect?.(img.image_id) : openImage(image || img, options)
+                }
                 alertHandler={memoizedHandleAlert}
                 authenticated={authenticated}
                 onRemoveFromView={handleDelete}
@@ -275,6 +277,7 @@ const ImageCards = React.memo(
                 selected={selectedImages?.has(img.image_id)}
                 onSelect={onImageSelect}
                 hideUploader={hideUploader}
+                removeOnMove={removeOnMove}
               />
             ))}
           </Box>

@@ -1,23 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { saveProgress, getResumeTime } from '../../common/videoProgress'
 import {
-  Autocomplete,
   Box,
   Button,
-  Chip,
   CircularProgress,
-  Divider,
   IconButton,
   InputAdornment,
-  Modal,
-  Paper,
   Popover,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
 import TagChip from '../ui/TagChip'
-import { motion } from 'framer-motion'
 import { DayPicker } from 'react-day-picker'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
@@ -25,6 +19,7 @@ import CalendarMonthIcon from '@mui/icons-material/CalendarMonth'
 import CloseIcon from '@mui/icons-material/Close'
 import CheckIcon from '@mui/icons-material/Check'
 import LinkIcon from '@mui/icons-material/Link'
+import DownloadIcon from '@mui/icons-material/Download'
 import RefreshIcon from '@mui/icons-material/Refresh'
 import LockIcon from '@mui/icons-material/Lock'
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate'
@@ -34,93 +29,40 @@ import './datepicker-dark.css'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 import {
+  copyLink,
   copyToClipboard,
+  downloadFile,
+  downloadName,
   getPublicWatchUrl,
   getUrl,
   getVideoSources,
+  getVideoUrl,
   getSetting,
   getPosterUrl as getVideoPosterUrl,
 } from '../../common/utils'
 import { ConfigService, VideoService, GameService, TagService } from '../../services'
 import SnackbarAlert from '../alert/SnackbarAlert'
 import VideoJSPlayer from '../player/VideoJSPlayer'
-import GameSearch from '../game/GameSearch'
 import SuggestionCard from '../cards/SuggestionCard'
-import UploaderMention from '../user/UploaderMention'
 import WaveformCropper from './WaveformCropper'
 import TonemapControls from './TonemapControls'
+import MediaModalShell, {
+  GamePill,
+  MediaMetaRow,
+  MediaPanel,
+  MediaTitle,
+  actionBtnSx,
+  aspectRatioOf,
+  inputSx,
+  labelSx,
+  panelButtonSx,
+} from './MediaModalShell'
+import { GameField, TagsField } from './MediaEditFields'
 
 const URL = getUrl()
 const PURL = getPublicWatchUrl()
 const APP_ORIGIN = window.location.origin
 
-// ─── Shared style constants (matching UpdateDetailsModal / CompactVideoCard) ──
-
-const labelSx = {
-  fontSize: 11,
-  color: '#FFFFFFB3',
-  textTransform: 'uppercase',
-  letterSpacing: '0.08em',
-  mb: 0.75,
-}
-
-const inputSx = {
-  '& .MuiOutlinedInput-root': {
-    color: 'white',
-    bgcolor: '#FFFFFF0D',
-    borderRadius: '8px',
-    '& fieldset': { borderColor: '#FFFFFF26' },
-    '&:hover fieldset': { borderColor: '#FFFFFF55' },
-    '&.Mui-focused fieldset': { borderColor: '#3399FF' },
-  },
-  '& .MuiInputBase-input.Mui-disabled': {
-    WebkitTextFillColor: 'rgba(255, 255, 255, 0.85)',
-  },
-}
-
-const rowBoxSx = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 1,
-  bgcolor: '#FFFFFF0D',
-  border: '1px solid #FFFFFF26',
-  borderRadius: '8px',
-  px: 1.5,
-  py: 1,
-}
-
-const actionBtnSx = {
-  color: '#FFFFFFB3',
-  bgcolor: '#FFFFFF0D',
-  border: '1px solid #FFFFFF1A',
-  borderRadius: '8px',
-  p: 1,
-  '&:hover': { bgcolor: '#FFFFFF1A', color: 'white' },
-}
-
-const SIDEBAR_WIDTH = 'clamp(280px, 24vw, 420px)'
-
-// Viewport inset around the modal on the side-by-side layout.
-const MODAL_PAD = 96
-// Short viewports (a phone held in landscape) can't spare 96px per side — the
-// video ends up a sliver — so they get a much smaller inset.
-const MODAL_PAD_SHORT = 24
-const SHORT_MD = '@media (min-width: 900px) and (max-height: 620px)'
-// Narrow *and* short: too little height to stack the video above the info
-// panel, so lay them out side by side like the desktop layout.
-const NARROW_SHORT = '@media (max-width: 899.95px) and (max-height: 620px)'
-// Cap for the stacked layout so the info panel — and with it the close button,
-// share actions and suggestions — always stays on screen for portrait videos.
-const STACKED_VIDEO_MAX_H = '60dvh'
-
-/**
- * Video box dimensions for the side-by-side layout: the largest box with the
- * video's aspect ratio that fits the viewport minus the inset and the sidebar.
- */
-const sideBySideVideo = (ar, pad) => {
-  const h = `min(calc((100vw - ${2 * pad}px - ${SIDEBAR_WIDTH}) / ${ar}), calc(100dvh - ${2 * pad}px))`
-  return { h, w: `calc((${h}) * ${ar})` }
-}
 
 const timeInputStyle = {
   background: '#FFFFFF0D',
@@ -207,6 +149,7 @@ const DateField = ({ selectedDate, selectedTime, onDateChange, onTimeChange }) =
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
+
 const VideoModal = ({
   open,
   onClose,
@@ -234,10 +177,8 @@ const VideoModal = ({
   const [passwordInput, setPasswordInput] = React.useState('')
   const [passwordLoading, setPasswordLoading] = React.useState(false)
   const [passwordReveal, setPasswordReveal] = React.useState(null)
-  const [gamePillColor, setGamePillColor] = React.useState(null)
   const [videoTags, setVideoTags] = React.useState([])
   const [allTags, setAllTags] = React.useState([])
-  const [tagInputValue, setTagInputValue] = React.useState('')
   const [cropStart, setCropStart] = React.useState(null)
   const [cropEnd, setCropEnd] = React.useState(null)
   const [hasCustomPoster, setHasCustomPoster] = React.useState(false)
@@ -266,58 +207,6 @@ const VideoModal = ({
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [open, editMode, onNext, onPrev])
-
-  React.useEffect(() => {
-    if (!selectedGame?.icon_url) {
-      setGamePillColor(null)
-      return
-    }
-
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-
-    img.onload = () => {
-      const SIZE = 64
-      const canvas = document.createElement('canvas')
-      canvas.width = SIZE
-      canvas.height = SIZE
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0, SIZE, SIZE)
-
-      const { data } = ctx.getImageData(0, 0, SIZE, SIZE)
-      let bestColor = null
-      let bestSaturation = -1
-
-      for (let i = 0; i < data.length; i += 4) {
-        const alpha = data[i + 3]
-        if (alpha < 128) continue
-
-        const r = data[i] / 255
-        const g = data[i + 1] / 255
-        const b = data[i + 2] / 255
-
-        const max = Math.max(r, g, b)
-        const min = Math.min(r, g, b)
-        const lightness = (max + min) / 2
-
-        // Skip near-black and near-white pixels
-        if (lightness < 0.15 || lightness > 0.92) continue
-
-        const chroma = max - min
-        const saturation = chroma === 0 ? 0 : chroma / (1 - Math.abs(2 * lightness - 1))
-
-        if (saturation > bestSaturation) {
-          bestSaturation = saturation
-          bestColor = [data[i], data[i + 1], data[i + 2]]
-        }
-      }
-
-      setGamePillColor(bestSaturation > 0.2 ? bestColor : null)
-    }
-
-    img.onerror = () => setGamePillColor(null)
-    img.src = selectedGame.icon_url
-  }, [selectedGame?.icon_url])
 
   const getRandomVideo = async () => {
     try {
@@ -490,7 +379,6 @@ const VideoModal = ({
       await TagService.addTagToVideo(vid.video_id, tagId)
       const updatedTags = (await TagService.getVideoTags(vid.video_id)).data
       setVideoTags(updatedTags)
-      setTagInputValue('')
     } catch (err) {
       console.error('Failed to add tag:', err)
     }
@@ -635,8 +523,10 @@ const VideoModal = ({
       const time = playerRef.current.currentTime()
       currentTime = time && !isNaN(time) ? time : 0
     }
-    copyToClipboard(`${PURL}${vid.video_id}?t=${currentTime}`)
-    setAlert({ type: 'info', message: 'Time stamped link copied to clipboard', open: true })
+    copyToClipboard(`${PURL}${vid.video_id}?t=${currentTime}`).then(
+      () => setAlert({ type: 'info', message: 'Time stamped link copied to clipboard', open: true }),
+      () => setAlert({ type: 'error', message: "Couldn't copy the link. Your browser blocked it.", open: true }),
+    )
   }
 
   const handleTimeUpdate = (e) => {
@@ -724,932 +614,551 @@ const VideoModal = ({
   if (!vid) return null
 
   // Video aspect ratio — drives the modal size via CSS min().
-  const ar = Number(((vid?.info?.width || 16) / (vid?.info?.height || 9)).toFixed(6))
-  const videoBox = sideBySideVideo(ar, MODAL_PAD)
-  const videoBoxShort = sideBySideVideo(ar, MODAL_PAD_SHORT)
+  const ar = aspectRatioOf(vid?.info)
 
   return (
     <>
       <SnackbarAlert severity={alert.type} open={alert.open} setOpen={(open) => setAlert({ ...alert, open })}>
         {alert.message}
       </SnackbarAlert>
-
-      <Modal
+      <MediaModalShell
         open={open}
         onClose={onClose}
-        disableAutoFocus={true}
-        slotProps={{ backdrop: { sx: { backgroundColor: 'rgba(0, 0, 0, 0.7)' } } }}
-      >
-        {/* Centering wrapper — click-outside closes modal */}
-        <Box
-          tabIndex={-1}
-          sx={{
-            outline: 'none',
-            display: 'flex',
-            height: '100%',
-            alignItems: { xs: 'flex-start', md: 'center' },
-            justifyContent: 'center',
-            // Full-screen on small viewports, padded on desktop
-            p: { xs: 0, md: `${MODAL_PAD}px` },
-            [SHORT_MD]: { p: `${MODAL_PAD_SHORT}px` },
-            overflowY: { xs: 'hidden', md: 'unset' },
-          }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) onClose()
-          }}
-        >
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3 }}
-            style={{ display: 'flex', justifyContent: 'center', width: '100%', maxWidth: '100%' }}
-          >
-            <Paper
-              sx={{
-                borderRadius: { xs: 0, md: '8px' },
-                overflow: 'hidden',
-                boxShadow: '0 25px 60px rgba(0, 0, 0, 0.8)',
-                bgcolor: '#020D1A',
-                display: 'flex',
-                flexDirection: 'column',
-                width: { xs: '100%', md: `calc(${videoBox.w} + ${SIDEBAR_WIDTH})` },
-                [SHORT_MD]: { width: `calc(${videoBoxShort.w} + ${SIDEBAR_WIDTH})` },
-                height: { xs: '100dvh', md: 'auto' },
-                maxHeight: { xs: '100dvh', md: '100%' },
-                maxWidth: '100%',
+        aspectRatio={ar}
+        stageSx={{
+          // Override VideoJS default 8px border-radius responsively
+          '& > div': {
+            borderRadius: {
+              xs: '0 !important',
+              md: editMode ? '8px 0 0 0 !important' : '8px 0 0 8px !important',
+            },
+          },
+        }}
+        stage={
+          <>
+            <VideoJSPlayer
+              key={`${vid.video_id}-${playerVersion}`}
+              sources={getVideoSources(vid.video_id, vid?.info, vid.extension, { forceOriginal: editMode })}
+              poster={getPosterUrl()}
+              autoplay={autoplay}
+              controls={true}
+              onTimeUpdate={handleTimeUpdate}
+              onReady={(player) => {
+                playerRef.current = player
               }}
-            >
-              {/* ── Top row: Video + Sidebar ─────────────────────────────────── */}
+              startTime={getResumeTime(vid.video_id, vid.info?.duration)}
+              fill={true}
+              fluid={false}
+              playsinline={true}
+            />
+            {cropProcessing && (
               <Box
                 sx={{
+                  position: 'absolute',
+                  inset: 0,
                   display: 'flex',
-                  flexDirection: { xs: 'column', md: 'row' },
-                  height: { xs: '100%', md: videoBox.h },
-                  [SHORT_MD]: { height: videoBoxShort.h },
-                  [NARROW_SHORT]: { flexDirection: 'row' },
-                  overflow: 'hidden',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  backdropFilter: 'blur(6px)',
+                  backgroundColor: 'rgba(2, 13, 26, 0.55)',
+                  zIndex: 10,
+                  borderRadius: 'inherit',
                 }}
               >
-                {/* ── Left: Video Player ───────────────────────────────────────── */}
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5 }}>
+                  <CircularProgress size={48} sx={{ color: '#fff' }} />
+                  <Typography variant="body2" sx={{ color: '#fff', fontWeight: 500, letterSpacing: '0.02em' }}>
+                    Cropping video...
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+          </>
+        }
+        panel={
+          <MediaPanel
+            label="Now Playing"
+            onClose={onClose}
+            actions={
+              <>
+                {authenticated && (
+                  <Tooltip title={privateView ? 'Make public' : 'Make private'}>
+                    <IconButton
+                      size="small"
+                      aria-label={privateView ? 'Make public' : 'Make private'}
+                      onClick={handlePrivacyChange}
+                      sx={{ ...actionBtnSx, color: privateView ? '#FF6B6B' : '#FFFFFFB3' }}
+                    >
+                      {privateView ? <VisibilityOffIcon sx={{ fontSize: 20 }} /> : <VisibilityIcon sx={{ fontSize: 20 }} />}
+                    </IconButton>
+                  </Tooltip>
+                )}
+
+                <Tooltip title="Copy link">
+                  <IconButton
+                    size="small"
+                    aria-label="Copy link"
+                    onClick={() => copyLink(`${PURL}${vid.video_id}`, setAlert)}
+                    sx={actionBtnSx}
+                  >
+                    <LinkIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+
+                <Tooltip title="Copy timestamp link">
+                  <IconButton size="small" aria-label="Copy timestamp link" onClick={copyTimestamp} sx={actionBtnSx}>
+                    <AccessTimeIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+
+                <Tooltip title="Download">
+                  <IconButton
+                    size="small"
+                    aria-label="Download"
+                    onClick={() =>
+                      downloadFile(
+                        getVideoUrl(vid.video_id, 'original', vid.extension),
+                        downloadName(title || vid.info?.title, vid.extension),
+                      )
+                    }
+                    sx={actionBtnSx}
+                  >
+                    <DownloadIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+
+                {authenticated &&
+                  (editMode ? (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={update}
+                      sx={{
+                        ...panelButtonSx,
+                        color: updateable ? '#3399FF' : '#FFFFFF',
+                        borderColor: updateable ? '#3399FF88' : '#FFFFFF44',
+                        '&:hover': {
+                          borderColor: updateable ? '#3399FF' : '#FFFFFF99',
+                          bgcolor: updateable ? '#3399FF11' : '#FFFFFF11',
+                        },
+                        ...(updateable && { animation: 'blink-blue 0.5s ease-in-out infinite alternate' }),
+                      }}
+                    >
+                      Save
+                    </Button>
+                  ) : (
+                    <Button size="small" onClick={() => setEditMode(true)} variant="outlined" sx={panelButtonSx}>
+                      Edit
+                    </Button>
+                  ))}
+              </>
+            }
+          >
+            {/* Title */}
+            <Box>
+              {editMode ? (
+                <TextField
+                  fullWidth
+                  size="small"
+                  value={title || ''}
+                  placeholder="Video Title"
+                  onChange={(e) => handleTitleChange(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && update()}
+                  onClick={(e) => e.stopPropagation()}
+                  autoFocus
+                  sx={inputSx}
+                />
+              ) : (
+                <MediaTitle>{title}</MediaTitle>
+              )}
+              {!editMode && (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', mt: 0.5, gap: 2 }}>
+                  <MediaMetaRow viewCount={vid.view_count} date={vid.recorded_at} uploader={vid.uploader} />
+                  <GamePill game={selectedGame} />
+                  {videoTags.length > 0 && (
+                    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 0.5 }}>
+                      {videoTags.map((tag) => (
+                        <TagChip key={tag.id} name={tag.name} color={tag.color} href={`${APP_ORIGIN}/tags/${tag.id}`} size="small" />
+                      ))}
+                    </Box>
+                  )}
+                </Box>
+              )}
+            </Box>
+
+            {/* Description */}
+            {(editMode || description) && (
+              <Box>
+                {editMode ? (
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={4}
+                    size="small"
+                    placeholder="Enter a video description..."
+                    value={description || ''}
+                    onChange={(e) => handleDescriptionChange(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    sx={inputSx}
+                  />
+                ) : (
+                  <Typography sx={{ fontSize: 14, color: '#FFFFFF', lineHeight: 1.6 }}>
+                    {description}
+                  </Typography>
+                )}
+              </Box>
+            )}
+
+            {/* Game (edit mode only) */}
+            {editMode && (authenticated || getSetting('ui_config')?.allow_public_game_tag) && (
+              <GameField
+                game={selectedGame}
+                onLinked={handleGameLinked}
+                onUnlink={handleUnlinkGame}
+                onError={(err) =>
+                  setAlert({
+                    open: true,
+                    type: 'error',
+                    message: err.response?.data || 'Error linking game',
+                  })
+                }
+              />
+            )}
+
+            {/* Tags (edit mode only) */}
+            {editMode && authenticated && (
+              <TagsField tags={videoTags} allTags={allTags} onAdd={handleAddTag} onRemove={handleRemoveTag} />
+            )}
+
+            {/* Thumbnail (edit mode only) */}
+            {editMode && authenticated && (
+              <Box>
+                <Typography sx={labelSx}>Thumbnail</Typography>
                 <Box
                   sx={{
                     position: 'relative',
-                    flexShrink: 0,
-                    bgcolor: '#020D1A',
-                    // Stacked: full width at the video's aspect ratio, capped in height
-                    // so the info panel below it always stays on screen.
-                    // Side-by-side: explicit dimensions from CSS.
-                    width: { xs: '100%', md: videoBox.w },
-                    height: { xs: `min(calc(100vw / ${ar}), ${STACKED_VIDEO_MAX_H})`, md: '100%' },
-                    [SHORT_MD]: { width: videoBoxShort.w },
-                    // Fill whatever is left beside the sidebar; the video letterboxes itself.
-                    [NARROW_SHORT]: { flex: 1, minWidth: 0, width: 'auto', height: '100%' },
-                    // Override VideoJS default 8px border-radius responsively
-                    '& > div': {
-                      borderRadius: {
-                        xs: '0 !important',
-                        md: editMode ? '8px 0 0 0 !important' : '8px 0 0 8px !important',
-                      },
-                    },
+                    borderRadius: '8px',
+                    overflow: 'hidden',
+                    cursor: 'pointer',
+                    lineHeight: 0,
                   }}
+                  onMouseEnter={() => setThumbnailHover(true)}
+                  onMouseLeave={() => setThumbnailHover(false)}
                 >
-                  <VideoJSPlayer
-                    key={`${vid.video_id}-${playerVersion}`}
-                    sources={getVideoSources(vid.video_id, vid?.info, vid.extension, { forceOriginal: editMode })}
-                    poster={getPosterUrl()}
-                    autoplay={autoplay}
-                    controls={true}
-                    onTimeUpdate={handleTimeUpdate}
-                    onReady={(player) => {
-                      playerRef.current = player
-                    }}
-                    startTime={getResumeTime(vid.video_id, vid.info?.duration)}
-                    fill={true}
-                    fluid={false}
-                    playsinline={true}
+                  <img
+                    key={pendingThumbnailPreview ?? posterCacheKey}
+                    src={getThumbnailPreviewUrl()}
+                    alt="Thumbnail"
+                    onLoad={() => setThumbnailLoaded(true)}
+                    style={{ width: '100%', display: thumbnailLoaded ? 'block' : 'none', borderRadius: 8 }}
                   />
-                  {cropProcessing && (
+                  {!thumbnailLoaded && (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+                      <CircularProgress size={28} sx={{ color: '#FFFFFF44' }} />
+                    </Box>
+                  )}
+                  {thumbnailHover && (
                     <Box
                       sx={{
                         position: 'absolute',
                         inset: 0,
+                        bgcolor: 'rgba(0,0,0,0.55)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        backdropFilter: 'blur(6px)',
-                        backgroundColor: 'rgba(2, 13, 26, 0.55)',
-                        zIndex: 10,
-                        borderRadius: 'inherit',
+                        gap: 1,
+                        borderRadius: '8px',
                       }}
                     >
-                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5 }}>
-                        <CircularProgress size={48} sx={{ color: '#fff' }} />
-                        <Typography variant="body2" sx={{ color: '#fff', fontWeight: 500, letterSpacing: '0.02em' }}>
-                          Cropping video...
-                        </Typography>
-                      </Box>
+                      <Tooltip title="Upload thumbnail">
+                        <IconButton
+                          onClick={() => thumbnailInputRef.current?.click()}
+                          sx={{ color: 'white', bgcolor: '#FFFFFF22', '&:hover': { bgcolor: '#FFFFFF44' } }}
+                        >
+                          <AddPhotoAlternateIcon />
+                        </IconButton>
+                      </Tooltip>
+                      <Tooltip title="Use current frame">
+                        <IconButton
+                          onClick={handleCaptureThumbnail}
+                          sx={{ color: 'white', bgcolor: '#FFFFFF22', '&:hover': { bgcolor: '#FFFFFF44' } }}
+                        >
+                          <PhotoCameraIcon />
+                        </IconButton>
+                      </Tooltip>
+                      {(hasCustomPoster || pendingThumbnailFile) && (
+                        <Tooltip
+                          title={pendingThumbnailFile ? 'Cancel pending upload' : 'Remove custom thumbnail'}
+                        >
+                          <IconButton
+                            onClick={handleClearThumbnail}
+                            sx={{ color: '#FF6B6B', bgcolor: '#FFFFFF22', '&:hover': { bgcolor: '#FFFFFF44' } }}
+                          >
+                            <DeleteOutlineIcon />
+                          </IconButton>
+                        </Tooltip>
+                      )}
                     </Box>
                   )}
                 </Box>
+                <input
+                  ref={thumbnailInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  style={{ display: 'none' }}
+                  onChange={handleThumbnailUpload}
+                />
+              </Box>
+            )}
 
-                {/* ── Right: Info Sidebar ──────────────────────────────────────── */}
-                <Box
-                  sx={{
-                    width: { xs: '100%', md: SIDEBAR_WIDTH },
-                    flex: { xs: 1, md: 'none' },
-                    flexShrink: 0,
-                    minHeight: 0,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    bgcolor: '#041223',
-                    borderLeft: { md: '1px solid #FFFFFF14' },
-                    borderTop: { xs: '1px solid #FFFFFF14', md: 'none' },
-                    [NARROW_SHORT]: {
-                      width: SIDEBAR_WIDTH,
-                      flex: 'none',
-                      borderLeft: '1px solid #FFFFFF14',
-                      borderTop: 'none',
-                    },
-                    overflow: 'hidden',
+            {/* Date picker (edit mode only) */}
+            {editMode && (
+              <Box>
+                <Typography sx={labelSx}>Recorded Date</Typography>
+                <DateField
+                  selectedDate={selectedDate}
+                  selectedTime={selectedTime}
+                  onDateChange={(d) => {
+                    setSelectedDate(d)
+                    setUpdatable(true)
                   }}
-                >
-                  {/* Header */}
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      px: 2.5,
-                      pt: 2,
-                      pb: 1.75,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Typography
-                      sx={{
-                        fontWeight: 700,
-                        fontSize: 12,
-                        color: '#FFFFFF66',
-                        textTransform: 'uppercase',
-                        letterSpacing: '0.12em',
-                      }}
-                    >
-                      Now Playing
-                    </Typography>
-                    <IconButton
-                      onClick={onClose}
-                      size="small"
-                      sx={{
-                        color: '#FFFFFF80',
-                        bgcolor: '#FFFFFF14',
-                        borderRadius: '8px',
-                        '&:hover': { bgcolor: '#FFFFFF2A', color: 'white' },
-                        width: 30,
-                        height: 30,
-                      }}
-                    >
-                      <CloseIcon sx={{ fontSize: 17 }} />
-                    </IconButton>
-                  </Box>
+                  onTimeChange={(t) => {
+                    setSelectedTime(t)
+                    setUpdatable(true)
+                  }}
+                />
+              </Box>
+            )}
 
-                  <Divider sx={{ borderColor: '#FFFFFF14', flexShrink: 0 }} />
+            {/* Dynamic range (edit mode only, HDR sources) */}
+            {editMode && authenticated && vid.info?.is_hdr && (
+              <Box>
+                <Typography sx={labelSx}>Dynamic Range</Typography>
+                <TonemapControls
+                  videoId={vid.video_id}
+                  videoInfo={vid.info}
+                  onInfoChange={(info) =>
+                    setVideo((prev) => (prev ? { ...prev, info: { ...prev.info, ...info } } : prev))
+                  }
+                  onConverted={() => {
+                    setPlayerVersion((v) => v + 1)
+                    setPosterCacheKey(Date.now())
+                  }}
+                  alertHandler={setAlert}
+                  getCurrentTime={() => playerRef.current?.currentTime() ?? 0}
+                />
+              </Box>
+            )}
 
-                  {/* Scrollable info content */}
-                  <Box
-                    sx={{
-                      flex: 1,
-                      overflowY: 'auto',
-                      px: 2.5,
-                      pt: 2,
-                      pb: 2,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 2,
-                      '&::-webkit-scrollbar': { width: 4 },
-                      '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
-                      '&::-webkit-scrollbar-thumb': { bgcolor: '#FFFFFF26', borderRadius: 2 },
-                    }}
-                  >
-                    {/* Title */}
-                    <Box>
-                      {editMode ? (
+            {/* Password protection (edit mode only) */}
+            {editMode && authenticated && (
+              <Box>
+                <Typography sx={labelSx}>Password Protection</Typography>
+                {(() => {
+                  const adornmentBtnSx = { color: '#FFFFFF66', '&:hover': { color: 'white' }, p: 0.5 }
+                  const handleSetPassword = async () => {
+                    if (!passwordInput.trim()) return
+                    setPasswordLoading(true)
+                    try {
+                      await VideoService.setPassword(vid.video_id, passwordInput.trim())
+                      setPasswordInput('')
+                      setHasPassword(true)
+                      setAlert({ type: 'success', message: 'Password set.', open: true })
+                    } catch {
+                      setAlert({ type: 'error', message: 'Failed to set password.', open: true })
+                    }
+                    setPasswordLoading(false)
+                  }
+                  if (passwordReveal) {
+                    return (
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                         <TextField
+                          value={passwordReveal}
                           fullWidth
                           size="small"
-                          value={title || ''}
-                          placeholder="Video Title"
-                          onChange={(e) => handleTitleChange(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && update()}
-                          onClick={(e) => e.stopPropagation()}
-                          autoFocus
-                          sx={inputSx}
-                        />
-                      ) : (
-                        <Typography
-                          sx={{
-                            fontWeight: 900,
-                            fontSize: 21,
-                            color: 'white',
-                            lineHeight: 1.3,
-                            letterSpacing: '-0.03em',
-                            overflowX: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {title || 'Untitled'}
-                        </Typography>
-                      )}
-                      {/* Views + Game inline row */}
-                      {!editMode && (
-                        <Box
-                          sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', mt: 0.5, gap: 2 }}
-                        >
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
-                            <Typography sx={{ fontSize: 14, color: '#FFFFFF55', flexShrink: 0 }}>
-                              {(vid.view_count ?? 0).toLocaleString()} {vid.view_count === 1 ? 'view' : 'views'}
-                            </Typography>
-                            {vid.recorded_at && (
-                              <>
-                                <Typography sx={{ fontSize: 14, color: '#FFFFFF55' }}>|</Typography>
-                                <Typography sx={{ fontSize: 14, color: '#FFFFFF55' }}>
-                                  {new Date(vid.recorded_at).toLocaleDateString('en-US', {
-                                    month: 'short',
-                                    day: 'numeric',
-                                    year: 'numeric',
-                                  })}
-                                </Typography>
-                              </>
-                            )}
-                            {vid.uploader && (
-                              <>
-                                <Typography sx={{ fontSize: 14, color: '#FFFFFF55' }}>|</Typography>
-                                <UploaderMention uploader={vid.uploader} size={20} />
-                              </>
-                            )}
-                          </Box>
-                          {selectedGame && (
-                            <Box
-                              component={selectedGame.steamgriddb_id ? 'a' : 'div'}
-                              href={
-                                selectedGame.steamgriddb_id
-                                  ? `${APP_ORIGIN}/games/${selectedGame.steamgriddb_id}`
-                                  : undefined
-                              }
-                              onClick={selectedGame.steamgriddb_id ? (e) => e.stopPropagation() : undefined}
-                              sx={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 0.75,
-                                minWidth: 0,
-                                bgcolor: gamePillColor ? `rgba(${gamePillColor.join(',')}, 0.15)` : '#FFFFFF14',
-                                border: `1px solid ${gamePillColor ? `rgba(${gamePillColor.join(',')}, 0.5)` : '#FFFFFF26'}`,
-                                borderRadius: '8px',
-                                px: 1,
-                                py: 0.35,
-                                textDecoration: 'none',
-                                flexShrink: 0,
-                                ...(selectedGame.steamgriddb_id && {
-                                  cursor: 'pointer',
-                                  '&:hover': {
-                                    bgcolor: gamePillColor ? `rgba(${gamePillColor.join(',')}, 0.4)` : '#FFFFFF22',
-                                  },
-                                }),
-                              }}
-                            >
-                              {selectedGame.icon_url && (
-                                <img
-                                  src={selectedGame.icon_url}
-                                  alt=""
-                                  onError={(e) => {
-                                    e.currentTarget.style.display = 'none'
-                                  }}
-                                  style={{
-                                    width: 20,
-                                    height: 20,
-                                    objectFit: 'contain',
-                                    borderRadius: 3,
-                                    flexShrink: 0,
-                                  }}
-                                />
-                              )}
-                              <Typography
-                                sx={{
-                                  fontSize: 14,
-                                  color: '#FFFFFF',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
-                                {selectedGame.name}
-                              </Typography>
-                            </Box>
-                          )}
-                          {videoTags.length > 0 && (
-                            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mt: 0.5 }}>
-                              {videoTags.map((tag) => (
-                                <TagChip
-                                  key={tag.id}
-                                  name={tag.name}
-                                  color={tag.color}
-                                  href={`${APP_ORIGIN}/tags/${tag.id}`}
-                                  size="small"
-                                />
-                              ))}
-                            </Box>
-                          )}
-                        </Box>
-                      )}
-                    </Box>
-
-                    {/* Description */}
-                    {(editMode || description) && (
-                      <Box>
-                        {editMode ? (
-                          <TextField
-                            fullWidth
-                            multiline
-                            rows={4}
-                            size="small"
-                            placeholder="Enter a video description..."
-                            value={description || ''}
-                            onChange={(e) => handleDescriptionChange(e.target.value)}
-                            onClick={(e) => e.stopPropagation()}
-                            sx={inputSx}
-                          />
-                        ) : (
-                          <Typography sx={{ fontSize: 14, color: '#FFFFFF', lineHeight: 1.6 }}>
-                            {description}
-                          </Typography>
-                        )}
-                      </Box>
-                    )}
-
-                    {/* Game search (edit mode only) */}
-                    {editMode && (authenticated || getSetting('ui_config')?.allow_public_game_tag) && (
-                      <Box>
-                        {selectedGame ? (
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 1,
-                              bgcolor: '#FFFFFF0D',
-                              border: '1px solid #FFFFFF26',
-                              borderRadius: '8px',
-                              px: 1.5,
-                              py: 1,
-                            }}
-                          >
-                            {selectedGame.icon_url && (
-                              <img
-                                src={selectedGame.icon_url}
-                                alt=""
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none'
-                                }}
-                                style={{ width: 20, height: 20, objectFit: 'contain', borderRadius: 3, flexShrink: 0 }}
-                              />
-                            )}
-                            <Typography
-                              sx={{
-                                fontSize: 14,
-                                color: 'white',
-                                flex: 1,
-                              }}
-                            >
-                              {selectedGame.name}
-                            </Typography>
-                            <IconButton
-                              size="small"
-                              onClick={handleUnlinkGame}
-                              sx={{ color: '#FFFFFF66', '&:hover': { color: 'white' }, p: 0.25 }}
-                            >
-                              <CloseIcon sx={{ fontSize: 16 }} />
-                            </IconButton>
-                          </Box>
-                        ) : (
-                          <Box
-                            sx={{
-                              ...rowBoxSx,
-                              py: 0,
-                              overflow: 'hidden',
-                              '& .MuiInputBase-root': { color: 'white', px: 0 },
-                              '& input::placeholder': { color: '#FFFFFF66', opacity: 1 },
-                              '& .MuiSvgIcon-root': { color: '#FFFFFF66' },
-                            }}
-                          >
-                            <GameSearch
-                              onGameLinked={handleGameLinked}
-                              onError={(err) =>
-                                setAlert({
-                                  open: true,
-                                  type: 'error',
-                                  message: err.response?.data || 'Error linking game',
-                                })
-                              }
-                              placeholder="Search for a game..."
-                            />
-                          </Box>
-                        )}
-                      </Box>
-                    )}
-
-                    {/* Tags (edit mode only) */}
-                    {editMode && authenticated && (
-                      <Box>
-                        <Typography sx={labelSx}>Tags</Typography>
-                        <Autocomplete
-                          multiple
-                          freeSolo
-                          componentsProps={{ root: { sx: { '& .MuiAutocomplete-tag': { my: 0.25 } } } }}
-                          sx={{ '& .MuiOutlinedInput-root': { gap: 0.5 } }}
-                          options={allTags.filter((t) => !videoTags.find((vt) => vt.id === t.id))}
-                          getOptionLabel={(option) => (typeof option === 'string' ? option : option.name)}
-                          value={videoTags}
-                          inputValue={tagInputValue}
-                          onInputChange={(_, v) => setTagInputValue(v)}
-                          onChange={(_, newValues) => {
-                            if (newValues.length > videoTags.length) {
-                              const added = newValues[newValues.length - 1]
-                              if (typeof added === 'string') {
-                                handleAddTag({ name: added })
-                              } else {
-                                handleAddTag(added)
-                              }
-                            }
-                          }}
-                          renderTags={(value) =>
-                            value.map((tag) => (
-                              <TagChip
-                                key={tag.id}
-                                name={tag.name}
-                                color={tag.color}
-                                size="small"
-                                onDelete={() => handleRemoveTag(tag.id)}
-                              />
-                            ))
-                          }
-                          renderInput={(params) => (
-                            <TextField
-                              {...params}
-                              size="small"
-                              placeholder={videoTags.length === 0 ? 'Add a tag...' : ''}
-                              sx={inputSx}
-                              inputProps={{ ...params.inputProps, maxLength: 12 }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' && tagInputValue.trim()) {
-                                  e.preventDefault()
-                                  const existing = allTags.find(
-                                    (t) => t.name.toLowerCase() === tagInputValue.trim().toLowerCase(),
-                                  )
-                                  handleAddTag(existing || { name: tagInputValue.trim() })
-                                }
-                                if (e.key === ',') {
-                                  e.preventDefault()
-                                  const parts = tagInputValue
-                                    .split(',')
-                                    .map((s) => s.trim())
-                                    .filter(Boolean)
-                                  setTagInputValue('')
-                                  parts.forEach((p) => {
-                                    const existing = allTags.find((t) => t.name.toLowerCase() === p.toLowerCase())
-                                    handleAddTag(existing || { name: p })
-                                  })
-                                }
-                              }}
-                            />
-                          )}
-                        />
-                      </Box>
-                    )}
-
-                    {/* Thumbnail (edit mode only) */}
-                    {editMode && authenticated && (
-                      <Box>
-                        <Typography sx={labelSx}>Thumbnail</Typography>
-                        <Box
-                          sx={{
-                            position: 'relative',
-                            borderRadius: '8px',
-                            overflow: 'hidden',
-                            cursor: 'pointer',
-                            lineHeight: 0,
-                          }}
-                          onMouseEnter={() => setThumbnailHover(true)}
-                          onMouseLeave={() => setThumbnailHover(false)}
-                        >
-                          <img
-                            key={pendingThumbnailPreview ?? posterCacheKey}
-                            src={getThumbnailPreviewUrl()}
-                            alt="Thumbnail"
-                            onLoad={() => setThumbnailLoaded(true)}
-                            style={{ width: '100%', display: thumbnailLoaded ? 'block' : 'none', borderRadius: 8 }}
-                          />
-                          {!thumbnailLoaded && (
-                            <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
-                              <CircularProgress size={28} sx={{ color: '#FFFFFF44' }} />
-                            </Box>
-                          )}
-                          {thumbnailHover && (
-                            <Box
-                              sx={{
-                                position: 'absolute',
-                                inset: 0,
-                                bgcolor: 'rgba(0,0,0,0.55)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                gap: 1,
-                                borderRadius: '8px',
-                              }}
-                            >
-                              <Tooltip title="Upload thumbnail">
+                          inputProps={{ readOnly: true }}
+                          sx={{ ...inputSx, '& input': { fontFamily: 'monospace', letterSpacing: 1 } }}
+                          InputProps={{
+                            endAdornment: (
+                              <InputAdornment position="end" sx={{ gap: 0.25 }}>
                                 <IconButton
-                                  onClick={() => thumbnailInputRef.current?.click()}
-                                  sx={{ color: 'white', bgcolor: '#FFFFFF22', '&:hover': { bgcolor: '#FFFFFF44' } }}
-                                >
-                                  <AddPhotoAlternateIcon />
-                                </IconButton>
-                              </Tooltip>
-                              <Tooltip title="Use current frame">
-                                <IconButton
-                                  onClick={handleCaptureThumbnail}
-                                  sx={{ color: 'white', bgcolor: '#FFFFFF22', '&:hover': { bgcolor: '#FFFFFF44' } }}
-                                >
-                                  <PhotoCameraIcon />
-                                </IconButton>
-                              </Tooltip>
-                              {(hasCustomPoster || pendingThumbnailFile) && (
-                                <Tooltip
-                                  title={pendingThumbnailFile ? 'Cancel pending upload' : 'Remove custom thumbnail'}
-                                >
-                                  <IconButton
-                                    onClick={handleClearThumbnail}
-                                    sx={{ color: '#FF6B6B', bgcolor: '#FFFFFF22', '&:hover': { bgcolor: '#FFFFFF44' } }}
-                                  >
-                                    <DeleteOutlineIcon />
-                                  </IconButton>
-                                </Tooltip>
-                              )}
-                            </Box>
-                          )}
-                        </Box>
-                        <input
-                          ref={thumbnailInputRef}
-                          type="file"
-                          accept="image/jpeg,image/png,image/webp"
-                          style={{ display: 'none' }}
-                          onChange={handleThumbnailUpload}
-                        />
-                      </Box>
-                    )}
-
-                    {/* Date picker (edit mode only) */}
-                    {editMode && (
-                      <Box>
-                        <Typography sx={labelSx}>Recorded Date</Typography>
-                        <DateField
-                          selectedDate={selectedDate}
-                          selectedTime={selectedTime}
-                          onDateChange={(d) => {
-                            setSelectedDate(d)
-                            setUpdatable(true)
-                          }}
-                          onTimeChange={(t) => {
-                            setSelectedTime(t)
-                            setUpdatable(true)
-                          }}
-                        />
-                      </Box>
-                    )}
-
-                    {/* Dynamic range (edit mode only, HDR sources) */}
-                    {editMode && authenticated && vid.info?.is_hdr && (
-                      <Box>
-                        <Typography sx={labelSx}>Dynamic Range</Typography>
-                        <TonemapControls
-                          videoId={vid.video_id}
-                          videoInfo={vid.info}
-                          onInfoChange={(info) =>
-                            setVideo((prev) => (prev ? { ...prev, info: { ...prev.info, ...info } } : prev))
-                          }
-                          onConverted={() => {
-                            setPlayerVersion((v) => v + 1)
-                            setPosterCacheKey(Date.now())
-                          }}
-                          alertHandler={setAlert}
-                          getCurrentTime={() => playerRef.current?.currentTime() ?? 0}
-                        />
-                      </Box>
-                    )}
-
-                    {/* Password protection (edit mode only) */}
-                    {editMode && authenticated && (
-                      <Box>
-                        <Typography sx={labelSx}>Password Protection</Typography>
-                        {(() => {
-                          const adornmentBtnSx = { color: '#FFFFFF66', '&:hover': { color: 'white' }, p: 0.5 }
-                          const handleSetPassword = async () => {
-                            if (!passwordInput.trim()) return
-                            setPasswordLoading(true)
-                            try {
-                              await VideoService.setPassword(vid.video_id, passwordInput.trim())
-                              setPasswordInput('')
-                              setHasPassword(true)
-                              setAlert({ type: 'success', message: 'Password set.', open: true })
-                            } catch {
-                              setAlert({ type: 'error', message: 'Failed to set password.', open: true })
-                            }
-                            setPasswordLoading(false)
-                          }
-                          if (passwordReveal) {
-                            return (
-                              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                                <TextField
-                                  value={passwordReveal}
-                                  fullWidth
                                   size="small"
-                                  inputProps={{ readOnly: true }}
-                                  sx={{ ...inputSx, '& input': { fontFamily: 'monospace', letterSpacing: 1 } }}
-                                  InputProps={{
-                                    endAdornment: (
-                                      <InputAdornment position="end" sx={{ gap: 0.25 }}>
-                                        <IconButton
-                                          size="small"
-                                          onClick={() => {
-                                            navigator.clipboard.writeText(passwordReveal)
-                                            setAlert({ type: 'info', message: 'Copied to clipboard.', open: true })
-                                          }}
-                                          sx={adornmentBtnSx}
-                                        >
-                                          <ContentCopyIcon sx={{ fontSize: 16 }} />
-                                        </IconButton>
-                                        <IconButton
-                                          size="small"
-                                          onClick={() => setPasswordReveal(null)}
-                                          sx={adornmentBtnSx}
-                                        >
-                                          <CloseIcon sx={{ fontSize: 16 }} />
-                                        </IconButton>
-                                      </InputAdornment>
-                                    ),
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(passwordReveal)
+                                    setAlert({ type: 'info', message: 'Copied to clipboard.', open: true })
                                   }}
-                                />
-                              </Box>
-                            )
-                          }
-                          if (hasPassword) {
-                            return (
-                              <TextField
-                                value="••••••••"
-                                fullWidth
-                                size="small"
-                                inputProps={{ readOnly: true }}
-                                sx={inputSx}
-                                InputProps={{
-                                  startAdornment: (
-                                    <InputAdornment position="start">
-                                      <LockIcon sx={{ fontSize: 15, color: '#FFFFFF66' }} />
-                                    </InputAdornment>
-                                  ),
-                                  endAdornment: (
-                                    <InputAdornment position="end">
-                                      {passwordLoading ? (
-                                        <CircularProgress size={16} sx={{ color: '#FFFFFF66' }} />
-                                      ) : (
-                                        <IconButton
-                                          size="small"
-                                          onClick={async () => {
-                                            setPasswordLoading(true)
-                                            try {
-                                              await VideoService.removePassword(vid.video_id)
-                                              setHasPassword(false)
-                                              setAlert({ type: 'info', message: 'Password removed.', open: true })
-                                            } catch {
-                                              setAlert({
-                                                type: 'error',
-                                                message: 'Failed to remove password.',
-                                                open: true,
-                                              })
-                                            }
-                                            setPasswordLoading(false)
-                                          }}
-                                          sx={{ ...adornmentBtnSx, '&:hover': { color: '#EF9A9A' } }}
-                                        >
-                                          <CloseIcon sx={{ fontSize: 16 }} />
-                                        </IconButton>
-                                      )}
-                                    </InputAdornment>
-                                  ),
-                                }}
-                              />
-                            )
-                          }
-                          return (
-                            <TextField
-                              value={passwordInput}
-                              onChange={(e) => setPasswordInput(e.target.value)}
-                              onKeyDown={(e) => e.key === 'Enter' && handleSetPassword()}
-                              placeholder="Set a password..."
-                              size="small"
-                              fullWidth
-                              sx={inputSx}
-                              InputProps={{
-                                endAdornment: (
-                                  <InputAdornment position="end" sx={{ gap: 0.25 }}>
-                                    {passwordLoading ? (
-                                      <CircularProgress size={16} sx={{ color: '#FFFFFF66' }} />
-                                    ) : (
-                                      <>
-                                        <IconButton
-                                          size="small"
-                                          onClick={async () => {
-                                            setPasswordLoading(true)
-                                            try {
-                                              const res = await VideoService.generatePassword(vid.video_id)
-                                              setPasswordReveal(res.data?.generated_password)
-                                              setHasPassword(true)
-                                            } catch {
-                                              setAlert({
-                                                type: 'error',
-                                                message: 'Failed to generate password.',
-                                                open: true,
-                                              })
-                                            }
-                                            setPasswordLoading(false)
-                                          }}
-                                          sx={{ ...adornmentBtnSx, '&:hover': { color: '#90CAF9' } }}
-                                        >
-                                          <RefreshIcon sx={{ fontSize: 16 }} />
-                                        </IconButton>
-                                        <IconButton
-                                          size="small"
-                                          onClick={handleSetPassword}
-                                          disabled={!passwordInput.trim()}
-                                          sx={adornmentBtnSx}
-                                        >
-                                          <CheckIcon sx={{ fontSize: 16 }} />
-                                        </IconButton>
-                                      </>
-                                    )}
-                                  </InputAdornment>
-                                ),
-                              }}
-                            />
-                          )
-                        })()}
+                                  sx={adornmentBtnSx}
+                                >
+                                  <ContentCopyIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                                <IconButton
+                                  size="small"
+                                  onClick={() => setPasswordReveal(null)}
+                                  sx={adornmentBtnSx}
+                                >
+                                  <CloseIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                              </InputAdornment>
+                            ),
+                          }}
+                        />
                       </Box>
-                    )}
-
-                    {suggestions.some((s) => s.video_id !== videoId) &&
-                      !editMode &&
-                      getSetting('ui_config')?.show_suggestions !== false && (
-                        <Box>
-                          <Typography sx={labelSx}>Suggested</Typography>
-                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                            {suggestions
-                              .filter((s) => s.video_id !== videoId)
-                              .map((suggestion) => (
-                                <SuggestionCard
-                                  key={suggestion.video_id}
-                                  video={suggestion}
-                                  onSelect={onSuggestionSelect}
-                                />
-                              ))}
-                          </Box>
-                        </Box>
-                      )}
-                  </Box>
-
-                  <Divider sx={{ borderColor: '#FFFFFF14', flexShrink: 0 }} />
-
-                  {/* Action buttons footer */}
-                  <Box
-                    sx={{
-                      px: 2.5,
-                      py: 2,
-                      flexShrink: 0,
-                      display: 'flex',
-                      gap: 1,
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    {authenticated && (
-                      <Tooltip title={privateView ? 'Make public' : 'Make private'}>
-                        <IconButton
-                          size="small"
-                          onClick={handlePrivacyChange}
-                          sx={{ ...actionBtnSx, color: privateView ? '#FF6B6B' : '#FFFFFFB3' }}
-                        >
-                          {privateView ? (
-                            <VisibilityOffIcon sx={{ fontSize: 20 }} />
-                          ) : (
-                            <VisibilityIcon sx={{ fontSize: 20 }} />
-                          )}
-                        </IconButton>
-                      </Tooltip>
-                    )}
-
-                    <Tooltip title="Copy link">
-                      <IconButton
+                    )
+                  }
+                  if (hasPassword) {
+                    return (
+                      <TextField
+                        value="••••••••"
+                        fullWidth
                         size="small"
-                        onClick={() => {
-                          copyToClipboard(`${PURL}${vid.video_id}`)
-                          setAlert({ type: 'info', message: 'Link copied to clipboard', open: true })
+                        inputProps={{ readOnly: true }}
+                        sx={inputSx}
+                        InputProps={{
+                          startAdornment: (
+                            <InputAdornment position="start">
+                              <LockIcon sx={{ fontSize: 15, color: '#FFFFFF66' }} />
+                            </InputAdornment>
+                          ),
+                          endAdornment: (
+                            <InputAdornment position="end">
+                              {passwordLoading ? (
+                                <CircularProgress size={16} sx={{ color: '#FFFFFF66' }} />
+                              ) : (
+                                <IconButton
+                                  size="small"
+                                  onClick={async () => {
+                                    setPasswordLoading(true)
+                                    try {
+                                      await VideoService.removePassword(vid.video_id)
+                                      setHasPassword(false)
+                                      setAlert({ type: 'info', message: 'Password removed.', open: true })
+                                    } catch {
+                                      setAlert({
+                                        type: 'error',
+                                        message: 'Failed to remove password.',
+                                        open: true,
+                                      })
+                                    }
+                                    setPasswordLoading(false)
+                                  }}
+                                  sx={{ ...adornmentBtnSx, '&:hover': { color: '#EF9A9A' } }}
+                                >
+                                  <CloseIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                              )}
+                            </InputAdornment>
+                          ),
                         }}
-                        sx={actionBtnSx}
-                      >
-                        <LinkIcon sx={{ fontSize: 20 }} />
-                      </IconButton>
-                    </Tooltip>
+                      />
+                    )
+                  }
+                  return (
+                    <TextField
+                      value={passwordInput}
+                      onChange={(e) => setPasswordInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSetPassword()}
+                      placeholder="Set a password..."
+                      size="small"
+                      fullWidth
+                      sx={inputSx}
+                      InputProps={{
+                        endAdornment: (
+                          <InputAdornment position="end" sx={{ gap: 0.25 }}>
+                            {passwordLoading ? (
+                              <CircularProgress size={16} sx={{ color: '#FFFFFF66' }} />
+                            ) : (
+                              <>
+                                <IconButton
+                                  size="small"
+                                  onClick={async () => {
+                                    setPasswordLoading(true)
+                                    try {
+                                      const res = await VideoService.generatePassword(vid.video_id)
+                                      setPasswordReveal(res.data?.generated_password)
+                                      setHasPassword(true)
+                                    } catch {
+                                      setAlert({
+                                        type: 'error',
+                                        message: 'Failed to generate password.',
+                                        open: true,
+                                      })
+                                    }
+                                    setPasswordLoading(false)
+                                  }}
+                                  sx={{ ...adornmentBtnSx, '&:hover': { color: '#90CAF9' } }}
+                                >
+                                  <RefreshIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                                <IconButton
+                                  size="small"
+                                  onClick={handleSetPassword}
+                                  disabled={!passwordInput.trim()}
+                                  sx={adornmentBtnSx}
+                                >
+                                  <CheckIcon sx={{ fontSize: 16 }} />
+                                </IconButton>
+                              </>
+                            )}
+                          </InputAdornment>
+                        ),
+                      }}
+                    />
+                  )
+                })()}
+              </Box>
+            )}
 
-                    <Tooltip title="Copy timestamp link">
-                      <IconButton size="small" onClick={copyTimestamp} sx={actionBtnSx}>
-                        <AccessTimeIcon sx={{ fontSize: 20 }} />
-                      </IconButton>
-                    </Tooltip>
-
-                    {authenticated &&
-                      (editMode ? (
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          onClick={update}
-                          sx={{
-                            ml: 'auto',
-                            fontSize: 12,
-                            fontWeight: 400,
-                            color: updateable ? '#3399FF' : '#FFFFFF',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                            borderColor: updateable ? '#3399FF88' : '#FFFFFF44',
-                            '&:hover': {
-                              borderColor: updateable ? '#3399FF' : '#FFFFFF99',
-                              bgcolor: updateable ? '#3399FF11' : '#FFFFFF11',
-                            },
-                            ...(updateable && { animation: 'blink-blue 0.5s ease-in-out infinite alternate' }),
-                          }}
-                        >
-                          Save
-                        </Button>
-                      ) : (
-                        <Button
-                          size="small"
-                          onClick={() => setEditMode(true)}
-                          variant="outlined"
-                          sx={{
-                            ml: 'auto',
-                            fontSize: 12,
-                            fontWeight: 400,
-                            color: '#FFFFFF',
-                            textTransform: 'uppercase',
-                            letterSpacing: '0.08em',
-                            borderColor: '#FFFFFF44',
-                            borderRadius: '8px',
-                            '&:hover': { borderColor: '#FFFFFF99', bgcolor: '#FFFFFF11' },
-                          }}
-                        >
-                          Edit
-                        </Button>
+            {suggestions.some((s) => s.video_id !== videoId) &&
+              !editMode &&
+              getSetting('ui_config')?.show_suggestions !== false && (
+                <Box>
+                  <Typography sx={labelSx}>Suggested</Typography>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                    {suggestions
+                      .filter((s) => s.video_id !== videoId)
+                      .map((suggestion) => (
+                        <SuggestionCard
+                          key={suggestion.video_id}
+                          video={suggestion}
+                          onSelect={onSuggestionSelect}
+                        />
                       ))}
                   </Box>
                 </Box>
-              </Box>
-
-              {/* ── Waveform Cropper (edit mode only) ────────────────────────── */}
-              {editMode && authenticated && (
-                <Box
-                  sx={{
-                    display: { xs: 'none', md: 'block' },
-                    borderTop: '1px solid #FFFFFF1A',
-                    bgcolor: '#020D1A',
-                    px: 2,
-                    py: 1,
-                    overflow: 'hidden',
-                  }}
-                >
-                  <WaveformCropper
-                    ref={waveformRef}
-                    key={vid.video_id}
-                    videoId={vid.video_id}
-                    duration={vid.info?.duration || 0}
-                    startTime={cropStart}
-                    endTime={cropEnd}
-                    onChange={({ startTime, endTime }) => {
-                      setCropStart(startTime)
-                      setCropEnd(endTime)
-                    }}
-                    onSeek={(time) => playerRef.current?.seek(time)}
-                    getCurrentTime={() => playerRef.current?.currentTime() ?? 0}
-                  />
-                </Box>
               )}
-            </Paper>
-          </motion.div>
-        </Box>
-      </Modal>
+          </MediaPanel>
+        }
+        below={
+          editMode &&
+          authenticated && (
+            <Box
+              sx={{
+                display: { xs: 'none', md: 'block' },
+                borderTop: '1px solid #FFFFFF1A',
+                bgcolor: '#020D1A',
+                px: 2,
+                py: 1,
+                overflow: 'hidden',
+              }}
+            >
+              <WaveformCropper
+                ref={waveformRef}
+                key={vid.video_id}
+                videoId={vid.video_id}
+                duration={vid.info?.duration || 0}
+                startTime={cropStart}
+                endTime={cropEnd}
+                onChange={({ startTime, endTime }) => {
+                  setCropStart(startTime)
+                  setCropEnd(endTime)
+                }}
+                onSeek={(time) => playerRef.current?.seek(time)}
+                getCurrentTime={() => playerRef.current?.currentTime() ?? 0}
+              />
+            </Box>
+          )
+        }
+      />
     </>
   )
 }

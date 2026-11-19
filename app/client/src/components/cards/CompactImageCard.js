@@ -1,17 +1,15 @@
 import React from 'react'
-import { Box, Typography, IconButton, Menu, MenuItem, ListItemIcon, Skeleton } from '@mui/material'
+import { Box, Typography, IconButton, Skeleton } from '@mui/material'
 import LinkIcon from '@mui/icons-material/Link'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 import MoreVertIcon from '@mui/icons-material/MoreVert'
-import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import PhotoIcon from '@mui/icons-material/Photo'
 import CheckIcon from '@mui/icons-material/Check'
-import { CopyToClipboard } from 'react-copy-to-clipboard'
-import { getPublicImageUrl, getImageThumbnailUrl } from '../../common/utils'
-import { ImageService } from '../../services'
+import { getImageThumbnailUrl } from '../../common/utils'
 import UploaderMention from '../user/UploaderMention'
-import DeleteImageModal from '../modal/DeleteImageModal'
+import CardMenu from './CardMenu'
+import useImageCardActions from './useImageCardActions'
 
 const IMAGE_VERSION = Date.now()
 
@@ -28,7 +26,12 @@ const CompactImageCard = ({
   hideUploader = false,
 }) => {
   const [thumbnailHover, setThumbnailHover] = React.useState(false)
-  const [privateView, setPrivateView] = React.useState(image.info?.private)
+  const { privateView, togglePrivacy, copy, menuItems, modals } = useImageCardActions({
+    image,
+    alertHandler,
+    openImageHandler,
+    onRemoveFromView,
+  })
   const [title, setTitle] = React.useState(
     image.info?.title ||
       (image.path
@@ -39,7 +42,6 @@ const CompactImageCard = ({
         : 'Untitled'),
   )
   const [menuAnchorEl, setMenuAnchorEl] = React.useState(null)
-  const [deleteModalOpen, setDeleteModalOpen] = React.useState(false)
   const [imgLoaded, setImgLoaded] = React.useState(false)
   const [imgRetryKey, setImgRetryKey] = React.useState(0)
   const retryTimeoutRef = React.useRef(null)
@@ -69,10 +71,6 @@ const CompactImageCard = ({
   }, [image.info?.title, image.path])
 
   React.useEffect(() => {
-    setPrivateView(image.info?.private)
-  }, [image.info?.private])
-
-  React.useEffect(() => {
     return () => {
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current)
     }
@@ -85,7 +83,6 @@ const CompactImageCard = ({
   }, [image.game])
 
   const menuOpen = Boolean(menuAnchorEl)
-  const PURL = getPublicImageUrl()
   const thumbnailUrl = getImageThumbnailUrl(image.image_id, IMAGE_VERSION)
   const viewCount = image.view_count || 0
 
@@ -96,28 +93,6 @@ const CompactImageCard = ({
       setImgRetryKey((k) => k + 1)
     }, 4000)
   }, [])
-
-  const handlePrivacyChange = async (e) => {
-    e.stopPropagation()
-    try {
-      await ImageService.updatePrivacy(image.image_id, !privateView)
-      alertHandler?.({
-        type: privateView ? 'info' : 'warning',
-        message: privateView ? 'Added to your public feed' : 'Removed from your public feed',
-        open: true,
-      })
-      setPrivateView((v) => !v)
-    } catch (err) {
-      alertHandler?.({ open: true, type: 'error', message: 'Failed to update privacy' })
-    }
-  }
-
-  const handleDeleteClose = (result) => {
-    setDeleteModalOpen(false)
-    if (result === 'delete' && onRemoveFromView) {
-      onRemoveFromView(image.image_id)
-    }
-  }
 
   return (
     <>
@@ -202,7 +177,11 @@ const CompactImageCard = ({
               <Typography sx={{ fontWeight: 600, fontSize: 14, color: 'white', fontFamily: 'monospace' }}>
                 {viewCount}
               </Typography>
-              <VisibilityIcon sx={{ fontSize: 18, color: privateView ? '#FF6B6B' : 'white' }} />
+              {privateView ? (
+                <VisibilityOffIcon sx={{ fontSize: 18, color: '#FF6B6B' }} aria-label="private" />
+              ) : (
+                <VisibilityIcon sx={{ fontSize: 18, color: 'white' }} />
+              )}
             </Box>
           </Box>
 
@@ -237,19 +216,14 @@ const CompactImageCard = ({
               transition: 'opacity 0.2s ease-in-out',
             }}
           >
-            <CopyToClipboard text={`${PURL}${image.image_id}`}>
-              <IconButton
-                sx={{ bgcolor: '#000000BF', '&:hover': { background: '#2684FF88' } }}
-                aria-label="copy link"
-                size="small"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  alertHandler?.({ type: 'info', message: 'Link copied to clipboard', open: true })
-                }}
-              >
-                <LinkIcon sx={{ color: 'white', fontSize: 24 }} />
-              </IconButton>
-            </CopyToClipboard>
+            <IconButton
+              sx={{ bgcolor: '#000000BF', '&:hover': { background: '#2684FF88' } }}
+              aria-label="copy link"
+              size="small"
+              onClick={copy}
+            >
+              <LinkIcon sx={{ color: 'white', fontSize: 24 }} />
+            </IconButton>
           </Box>
 
           {/* Privacy toggle — bottom left, shows on hover when authenticated */}
@@ -270,7 +244,7 @@ const CompactImageCard = ({
                 }}
                 aria-label="toggle visibility"
                 size="small"
-                onClick={handlePrivacyChange}
+                onClick={togglePrivacy}
               >
                 {privateView ? (
                   <VisibilityOffIcon sx={{ color: '#FF6B6B', fontSize: 24 }} />
@@ -415,6 +389,7 @@ const CompactImageCard = ({
           {/* 3-dot menu */}
           <IconButton
             size="small"
+            aria-label="More actions"
             onClick={(e) => {
               e.stopPropagation()
               setMenuAnchorEl(e.currentTarget)
@@ -431,78 +406,15 @@ const CompactImageCard = ({
           </IconButton>
         </Box>
 
-        {/* Context menu */}
-        <Menu
+        <CardMenu
           anchorEl={menuAnchorEl}
-          open={menuOpen}
           onClose={() => setMenuAnchorEl(null)}
-          onClick={(e) => e.stopPropagation()}
-          transformOrigin={{ horizontal: 'right', vertical: 'top' }}
-          anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-          slotProps={{
-            paper: {
-              sx: {
-                bgcolor: '#0b132b',
-                border: '1px solid #FFFFFF14',
-                borderRadius: '10px',
-                minWidth: 160,
-                boxShadow: '0 8px 32px #00000099',
-                mt: 0.5,
-              },
-            },
-          }}
-        >
-          {[
-            {
-              label: 'Copy Link',
-              Icon: LinkIcon,
-              color: '#FFFFFFE6',
-              onClick: () => {
-                navigator.clipboard.writeText(`${PURL}${image.image_id}`)
-                alertHandler?.({ type: 'info', message: 'Link copied to clipboard', open: true })
-              },
-            },
-            {
-              label: 'Delete',
-              Icon: DeleteOutlineIcon,
-              color: '#EF5350',
-              danger: true,
-              requiresAuth: true,
-              onClick: () => setDeleteModalOpen(true),
-            },
-          ]
-            .filter((item) => !item.requiresAuth || authenticated)
-            .map(({ label, Icon, color, danger, onClick }) => (
-              <MenuItem
-                key={label}
-                onClick={() => {
-                  onClick?.()
-                  setMenuAnchorEl(null)
-                }}
-                sx={{
-                  gap: 1.5,
-                  py: 1.25,
-                  fontSize: 14,
-                  color,
-                  bgcolor: danger ? '#EF535012' : 'transparent',
-                  '&:hover': { bgcolor: danger ? '#EF535028' : '#FFFFFF12' },
-                }}
-              >
-                <ListItemIcon sx={{ minWidth: 0, color: danger ? '#EF5350' : 'white' }}>
-                  <Icon fontSize="small" />
-                </ListItemIcon>
-                {label}
-              </MenuItem>
-            ))}
-        </Menu>
+          items={menuItems}
+          authenticated={authenticated}
+        />
       </Box>
 
-      <DeleteImageModal
-        open={deleteModalOpen}
-        onClose={handleDeleteClose}
-        imageId={image.image_id}
-        alertHandler={alertHandler}
-      />
+      {modals}
     </>
   )
 }

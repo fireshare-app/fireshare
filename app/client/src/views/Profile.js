@@ -33,10 +33,10 @@ import { UserService } from '../services'
 import VideoCards from '../components/cards/VideoCards'
 import ImageCards from '../components/cards/ImageCards'
 import SnackbarAlert from '../components/alert/SnackbarAlert'
-import EditImageModal from '../components/modal/EditImageModal'
+import ImageModal from '../components/modal/ImageModal'
 import UserAvatar, { gradientFor } from '../components/user/UserAvatar'
 import { dialogTitleSx, inputSx, helperTextSx } from '../common/modalStyles'
-import { useMobileFullScreenDialog } from '../common/utils'
+import { applyImageUpdate, useMobileFullScreenDialog } from '../common/utils'
 
 /** Short "how long ago" label for the profile subtext. */
 const relativeTime = (iso) => {
@@ -111,6 +111,7 @@ const Profile = ({ authenticated }) => {
   // ImageCards has no modal of its own (unlike VideoCards), so the viewer is
   // owned here, the same way ImageFeed owns it.
   const [modalImage, setModalImage] = React.useState(null)
+  const [modalImageEdit, setModalImageEdit] = React.useState(false)
   // Game art is served from the SteamGridDB asset cache, which may not have been
   // downloaded (no API key, or a game with no art). Track load failure so the
   // gradient underneath stays visible instead of showing a broken image.
@@ -166,8 +167,9 @@ const Profile = ({ authenticated }) => {
     }
   }, [tab, profile, username, videos, images, games])
 
-  const handleImageOpen = React.useCallback((image) => {
+  const handleImageOpen = React.useCallback((image, options) => {
     setModalImage(image)
+    setModalImageEdit(Boolean(options?.edit))
   }, [])
 
   const handleImageNext = React.useCallback(() => {
@@ -192,17 +194,7 @@ const Profile = ({ authenticated }) => {
         (prev || []).map((img) =>
           img.image_id !== modalImage.image_id
             ? img
-            : {
-                ...img,
-                info: {
-                  ...img.info,
-                  ...(update.title !== undefined && { title: update.title }),
-                  ...(update.private !== undefined && { private: update.private }),
-                },
-                ...(update.game !== undefined && { game: update.game }),
-                ...(update.created_at !== undefined && { created_at: update.created_at }),
-                ...(update.uploader !== undefined && { uploader: update.uploader }),
-              },
+            : applyImageUpdate(img, update),
         ),
       )
     }
@@ -367,10 +359,11 @@ const Profile = ({ authenticated }) => {
         {alert.message}
       </SnackbarAlert>
 
-      <EditImageModal
+      <ImageModal
         open={Boolean(modalImage)}
         onClose={handleImageModalClose}
         image={modalImage}
+        startInEditMode={modalImageEdit}
         alertHandler={setAlert}
         authenticated={authenticated}
         onNext={handleImageNext}

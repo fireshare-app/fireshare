@@ -21,7 +21,8 @@ import DoneAllIcon from '@mui/icons-material/DoneAll'
 import RemoveDoneIcon from '@mui/icons-material/RemoveDone'
 import Select from 'react-select'
 import ImageCards from '../components/cards/ImageCards'
-import EditImageModal from '../components/modal/EditImageModal'
+import ImageModal from '../components/modal/ImageModal'
+import { applyImageUpdate } from '../common/utils'
 import { ImageService } from '../services'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import SnackbarAlert from '../components/alert/SnackbarAlert'
@@ -39,6 +40,7 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
   const [search, setSearch] = React.useState(searchText)
   const [alert, setAlert] = React.useState({ open: false })
   const [modalImage, setModalImage] = React.useState(null)
+  const [modalImageEdit, setModalImageEdit] = React.useState(false)
   const [sortOrder, setSortOrder] = React.useState(SORT_OPTIONS?.[0] || { value: 'newest', label: 'Newest' })
   const [privacyFilter, setPrivacyFilter] = React.useState(PRIVACY_OPTIONS[0])
   const [randomized, setRandomized] = React.useState(false)
@@ -254,8 +256,9 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
     window.scrollTo({ top: 0 })
   }
 
-  const handleImageOpen = React.useCallback((image) => {
+  const handleImageOpen = React.useCallback((image, options) => {
     setModalImage(image)
+    setModalImageEdit(Boolean(options?.edit))
   }, [])
 
   // Edit mode handlers
@@ -325,17 +328,7 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
       // Update the image in state with any changes from the modal
       const updateImage = (img) => {
         if (img.image_id !== modalImage.image_id) return img
-        return {
-          ...img,
-          info: {
-            ...img.info,
-            ...(update.title !== undefined && { title: update.title }),
-            ...(update.private !== undefined && { private: update.private }),
-          },
-          ...(update.game !== undefined && { game: update.game }),
-          ...(update.created_at !== undefined && { created_at: update.created_at }),
-          ...(update.uploader !== undefined && { uploader: update.uploader }),
-        }
+        return applyImageUpdate(img, update)
       }
       setImages((prev) => prev.map(updateImage))
       setFilteredImages((prev) => prev.map(updateImage))
@@ -465,10 +458,11 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
           </Box>,
           toolbarTarget,
         )}
-      <EditImageModal
+      <ImageModal
         open={Boolean(modalImage)}
         onClose={handleModalClose}
         image={modalImage}
+        startInEditMode={modalImageEdit}
         alertHandler={setAlert}
         authenticated={authenticated}
         onNext={handleNext}

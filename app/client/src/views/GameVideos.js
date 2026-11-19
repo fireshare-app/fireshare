@@ -24,11 +24,11 @@ import DeleteIcon from '@mui/icons-material/Delete'
 import LinkIcon from '@mui/icons-material/Link'
 import { GameService, VideoService, ImageService } from '../services'
 import { recordAssetBust, applyAssetBusts } from '../services/GameService'
-import { getGameAssetUrl } from '../common/utils'
+import { applyImageUpdate, getGameAssetUrl } from '../common/utils'
 import CompactVideoCard from '../components/cards/CompactVideoCard'
 import VideoModal from '../components/modal/VideoModal'
 import CompactImageCard from '../components/cards/CompactImageCard'
-import EditImageModal from '../components/modal/EditImageModal'
+import ImageModal from '../components/modal/ImageModal'
 import GameVideosHeader from '../components/game/GameVideosHeader'
 import GameSearch from '../components/game/GameSearch'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
@@ -50,6 +50,7 @@ const GameVideos = ({ cardSize, authenticated, searchText }) => {
   const [images, setImages] = React.useState([])
   const [filteredImages, setFilteredImages] = React.useState([])
   const [modalImage, setModalImage] = React.useState(null)
+  const [modalImageEdit, setModalImageEdit] = React.useState(false)
   const [videoModal, setVideoModal] = React.useState({ open: false })
   const [search, setSearch] = React.useState(searchText)
   const [game, setGame] = React.useState(null)
@@ -323,40 +324,23 @@ const GameVideos = ({ cardSize, authenticated, searchText }) => {
     }
   }
 
-  const handleImageOpen = React.useCallback((image) => setModalImage(image), [])
+  const handleImageOpen = React.useCallback((image, options) => {
+    setModalImage(image)
+    setModalImageEdit(Boolean(options?.edit))
+  }, [])
 
   const handleImageModalClose = (update) => {
     if (update) {
       setImages((prev) =>
         prev.map((img) => {
           if (img.image_id !== modalImage?.image_id) return img
-          return {
-            ...img,
-            info: {
-              ...img.info,
-              ...(update.title !== undefined && { title: update.title }),
-              ...(update.private !== undefined && { private: update.private }),
-            },
-            ...(update.game !== undefined && { game: update.game }),
-            ...(update.created_at !== undefined && { created_at: update.created_at }),
-            ...(update.uploader !== undefined && { uploader: update.uploader }),
-          }
+          return applyImageUpdate(img, update)
         }),
       )
       setFilteredImages((prev) =>
         prev.map((img) => {
           if (img.image_id !== modalImage?.image_id) return img
-          return {
-            ...img,
-            info: {
-              ...img.info,
-              ...(update.title !== undefined && { title: update.title }),
-              ...(update.private !== undefined && { private: update.private }),
-            },
-            ...(update.game !== undefined && { game: update.game }),
-            ...(update.created_at !== undefined && { created_at: update.created_at }),
-            ...(update.uploader !== undefined && { uploader: update.uploader }),
-          }
+          return applyImageUpdate(img, update)
         }),
       )
     }
@@ -491,10 +475,11 @@ const GameVideos = ({ cardSize, authenticated, searchText }) => {
           if (i > 0) setVideoModal({ open: true, id: videoItems[i - 1].video_id })
         }}
       />
-      <EditImageModal
+      <ImageModal
         open={Boolean(modalImage)}
         onClose={handleImageModalClose}
         image={modalImage}
+        startInEditMode={modalImageEdit}
         alertHandler={setAlert}
         authenticated={authenticated}
         onNext={handleImageModalNext}

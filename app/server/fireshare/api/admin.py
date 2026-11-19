@@ -17,7 +17,14 @@ from .. import db, logger, util
 from ..models import Video, VideoInfo, VideoView, GameMetadata, VideoGameLink, VideoTagLink, Image, ImageInfo, ImageGameLink, ImageTagLink, ImageView, TranscodeJob, MediaFolder
 from .. import permissions as perms
 from . import api
-from .helpers import cancel_pending_transcode_jobs, delete_video_files, resolve_media_subfolder
+from .helpers import (
+    MoveRefused,
+    cancel_pending_transcode_jobs,
+    delete_video_files,
+    get_or_create_media_folder as _get_or_create_media_folder,
+    move_image_file,
+    resolve_media_subfolder,
+)
 from .transcoding import _is_pid_running
 from .scan import _game_scan_state
 from .decorators import admin_required, demo_restrict
@@ -437,17 +444,6 @@ def bulk_delete_files():
             results['errors'].append({'video_id': vid_id, 'error': str(e)})
 
     return jsonify(results)
-
-
-def _get_or_create_media_folder(dirname, media_type):
-    folder = MediaFolder.query.filter_by(path=dirname, media_type=media_type).first()
-    if folder:
-        return folder
-    now = datetime.utcnow()
-    folder = MediaFolder(path=dirname, media_type=media_type, private=True, created_at=now, updated_at=now)
-    db.session.add(folder)
-    db.session.flush()
-    return folder
 
 
 @api.route('/api/admin/files/bulk-move', methods=['POST'])
@@ -1079,34 +1075,12 @@ def bulk_move_images():
             results['errors'].append({'image_id': img_id, 'error': 'Not found'})
             continue
 
-        old_file_path = image_path / img.path
-        filename = Path(img.path).name
-        new_path = f"{target_folder}/{filename}" if target_folder else filename
-        new_file_path = image_path / new_path
-
-        if old_file_path.resolve() == new_file_path.resolve():
-            results['errors'].append({'image_id': img_id, 'error': 'Already in that folder'})
-            continue
-
-        if new_file_path.exists():
-            results['errors'].append({'image_id': img_id, 'error': f"File '{filename}' already exists in '{target_folder}'"})
-            continue
-
         try:
-            shutil.move(str(old_file_path), str(new_file_path))
-
-            link_path = paths['processed'] / 'image_links' / f"{img_id}{img.extension}"
-            if link_path.exists() or link_path.is_symlink():
-                link_path.unlink()
-            os.symlink(new_file_path.absolute(), link_path)
-
-            img.path = new_path
-            img.folder_id = (
-                _get_or_create_media_folder(target_folder.split('/')[0], "image").id
-                if target_folder else None
-            )
+            move_image_file(img, image_path, target_folder_path, target_folder, paths['processed'])
             db.session.commit()
             results['moved'].append(img_id)
+        except MoveRefused as e:
+            results['errors'].append({'image_id': img_id, 'error': str(e)})
         except Exception as e:
             db.session.rollback()
             results['errors'].append({'image_id': img_id, 'error': str(e)})
