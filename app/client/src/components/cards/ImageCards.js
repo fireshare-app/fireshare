@@ -4,11 +4,8 @@ import { Box, Button, Typography } from '@mui/material'
 import SnackbarAlert from '../alert/SnackbarAlert'
 import ImageIcon from '@mui/icons-material/Image'
 import SensorsIcon from '@mui/icons-material/Sensors'
-import MasonryImageCard, { IMAGE_CARD_FOOTER_HEIGHT, imageAspectRatio } from './MasonryImageCard'
+import MasonryImageCard, { imageAspectRatio } from './MasonryImageCard'
 import { ImageService } from '../../services'
-
-// Matches the gap between cards on the Home feed and the video grids.
-const GAP = 12
 
 // Stable per-image delay derived from image ID so it doesn't change across re-renders
 function stableDelay(id) {
@@ -88,16 +85,18 @@ const LazyImageCard = ({
     }
   }, [activated, listVersion])
 
-  // The placeholder is the card's exact height (the image's shape plus the fixed
-  // footer), so a card that mounts or unloads never moves the columns.
   return (
-    <div ref={ref} style={{ breakInside: 'avoid', marginBottom: GAP, width: '100%' }}>
-      {!activated && (
-        <div style={{ borderRadius: 12, overflow: 'hidden', backgroundColor: 'rgba(30, 60, 130, 0.12)' }}>
-          <div style={{ aspectRatio: imageAspectRatio(img) }} />
-          <div style={{ height: IMAGE_CARD_FOOTER_HEIGHT }} />
-        </div>
-      )}
+    <div
+      ref={ref}
+      style={{
+        breakInside: 'avoid',
+        marginBottom: 8,
+        width: '100%',
+        aspectRatio: imageAspectRatio(img),
+        overflow: 'hidden',
+        backgroundColor: activated ? 'transparent' : 'rgba(30, 60, 130, 0.12)',
+      }}
+    >
       {activated && (
         <motion.div
           initial={{ opacity: 0, filter: 'blur(8px)' }}
@@ -162,7 +161,7 @@ const ImageCards = React.memo(
         const width = entry?.contentRect?.width || 0
         if (!width) return
         const colWidth = size || 300
-        const cols = Math.max(1, Math.floor((width + GAP) / (colWidth + GAP)))
+        const cols = Math.max(1, Math.floor((width + 16) / (colWidth + 16)))
         setColumnCount(cols)
       })
 
@@ -259,7 +258,7 @@ const ImageCards = React.memo(
             ref={containerRef}
             sx={{
               columnCount: columnCount,
-              columnGap: `${GAP}px`,
+              columnGap: '8px',
             }}
           >
             {imgs.map((img) => (

@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom'
 import { Box, ToggleButton, ToggleButtonGroup, Typography, useMediaQuery, useTheme } from '@mui/material'
 import Select from 'react-select'
 import CompactVideoCard from '../components/cards/CompactVideoCard'
-import MasonryImageCard, { IMAGE_CARD_FOOTER_HEIGHT } from '../components/cards/MasonryImageCard'
+import MasonryImageCard from '../components/cards/MasonryImageCard'
 import VideoModal from '../components/modal/VideoModal'
 import ImageModal from '../components/modal/ImageModal'
 import { applyImageUpdate } from '../common/utils'
@@ -71,7 +71,7 @@ const estimateHeight = (item, columnWidth) => {
   if (item.kind === 'video') return Math.round((columnWidth * 9) / 16) + VIDEO_INFO_HEIGHT
   const w = item.raw.info?.width
   const h = item.raw.info?.height
-  return Math.round(w && h ? (columnWidth * h) / w : (columnWidth * 9) / 16) + IMAGE_CARD_FOOTER_HEIGHT
+  return Math.round(w && h ? (columnWidth * h) / w : (columnWidth * 9) / 16)
 }
 
 // Mounts its card once it comes within reach of the viewport. Until then a box
