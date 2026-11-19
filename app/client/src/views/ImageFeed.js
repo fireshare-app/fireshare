@@ -29,7 +29,14 @@ import SnackbarAlert from '../components/alert/SnackbarAlert'
 import { folderSelectTheme as selectFolderTheme } from '../common/reactSelectThemes'
 import OutlinedIconButton from '../components/ui/OutlinedIconButton'
 import MarqueeSingleValue, { MarqueeOption } from '../components/ui/MarqueeSingleValue'
-import { SORT_OPTIONS, PRIVACY_OPTIONS, SORT_SELECT_WIDTH, PRIVACY_SELECT_WIDTH } from '../common/constants'
+import {
+  SORT_OPTIONS,
+  PRIVACY_OPTIONS,
+  SORT_SELECT_WIDTH,
+  PRIVACY_SELECT_WIDTH,
+  TAG_SELECT_WIDTH,
+} from '../common/constants'
+import TagFilter, { hasAllTags, useTagFilter } from '../components/nav/TagFilter'
 import ToolbarFilterMenu from '../components/nav/ToolbarFilterMenu'
 
 const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, onImageFoldersLoaded, onImageFolderChange, showFolderDropdown, uploadTick }) => {
@@ -49,6 +56,7 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
   const [sortKey, setSortKey] = React.useState(0)
   const [imageFolderList, setImageFolderList] = React.useState([])
   const [toolbarTarget, setToolbarTarget] = React.useState(null)
+  const { options: tagOptions, selected: tagFilter, setSelected: setTagFilter } = useTagFilter(images)
 
   // Edit mode state
   const [editMode, setEditMode] = React.useState(false)
@@ -177,9 +185,12 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
                 .filter((f) => f !== '')[0] === folder.value,
           )
 
-    if (privacyFilter.value === 'all') return folderFiltered
-    return folderFiltered.filter((img) => img.info?.private === (privacyFilter.value === 'private'))
-  }, [filteredImages, folder, privacyFilter])
+    return folderFiltered.filter(
+      (img) =>
+        (privacyFilter.value === 'all' || img.info?.private === (privacyFilter.value === 'private')) &&
+        hasAllTags(img, tagFilter),
+    )
+  }, [filteredImages, folder, privacyFilter, tagFilter])
 
   const sortedImages = React.useMemo(() => {
     if (!displayImages) return []
@@ -210,6 +221,13 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
     window.scrollTo({ top: 0 })
   }
 
+  const handleTagChange = (selected) => {
+    setTagFilter(selected)
+    setRandomized(false)
+    setSortKey((k) => k + 1)
+    window.scrollTo({ top: 0 })
+  }
+
   const handlePrivacyChange = (option) => {
     setPrivacyFilter(option)
     setRandomized(false)
@@ -230,6 +248,12 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
         defaultValue: 'All Images',
         selectProps: { components: { SingleValue: MarqueeSingleValue, Option: MarqueeOption } },
       },
+    tagOptions.length > 0 && {
+      key: 'tags',
+      label: 'Tags',
+      value: tagFilter,
+      render: <TagFilter options={tagOptions} value={tagFilter} onChange={handleTagChange} />,
+    },
     {
       key: 'sort',
       label: 'Sort by',
@@ -363,6 +387,11 @@ const ImageFeed = ({ authenticated, searchText, cardSize, selectedImageFolder, o
                           isSearchable={false}
                           components={{ SingleValue: MarqueeSingleValue, Option: MarqueeOption }}
                         />
+                      </Box>
+                    )}
+                    {tagOptions.length > 0 && (
+                      <Box sx={{ width: TAG_SELECT_WIDTH, flexShrink: 0 }}>
+                        <TagFilter options={tagOptions} value={tagFilter} onChange={handleTagChange} />
                       </Box>
                     )}
                     <Box sx={{ minWidth: SORT_SELECT_WIDTH }}>

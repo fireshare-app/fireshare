@@ -7,7 +7,6 @@ import MoreVertIcon from '@mui/icons-material/MoreVert'
 import CheckIcon from '@mui/icons-material/Check'
 import ImageIcon from '@mui/icons-material/Image'
 import { getImageThumbnailUrl, mediaTitle } from '../../common/utils'
-import TagChip from '../ui/TagChip'
 import UploaderMention from '../user/UploaderMention'
 import CardMenu from './CardMenu'
 import useImageCardActions from './useImageCardActions'
@@ -81,7 +80,6 @@ const MasonryImageCard = ({
 
   const title = mediaTitle(image)
   const game = image.game
-  const tags = image.tags || []
   const viewCount = image.view_count || 0
   const thumbnailUrl = getImageThumbnailUrl(image.image_id, IMAGE_VERSION)
   // The overlay stays up while its menu is open, so the menu keeps its anchor.
@@ -337,14 +335,6 @@ const MasonryImageCard = ({
               <MoreVertIcon sx={{ fontSize: 24 }} />
             </IconButton>
           </Box>
-
-          {tags.length > 0 && (
-            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.75 }}>
-              {tags.map((tag) => (
-                <TagChip key={tag.id} name={tag.name} color={tag.color} size="small" />
-              ))}
-            </Box>
-          )}
         </Box>
 
         {/* Selection checkbox */}
