@@ -22,3 +22,5 @@ export const AUTH_REQUIRED_PAGES = ['/', '/settings']
 // labels for a narrower control on small screens.
 export const SORT_SELECT_WIDTH = { xs: 112, sm: 124 }
 export const PRIVACY_SELECT_WIDTH = { xs: 92, sm: 96 }
+// The tag filter shows "Tags", one tag's name or "3 tags", plus a clear button.
+export const TAG_SELECT_WIDTH = { xs: 112, sm: 152 }

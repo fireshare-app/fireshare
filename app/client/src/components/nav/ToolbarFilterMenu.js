@@ -15,8 +15,11 @@ import { folderSelectTheme } from '../../common/reactSelectThemes'
 // popover where each one gets a full-width row and a label.
 const MENU_WIDTH = 260
 
+// A multi-select (the tag filter) is active when anything is picked.
 const isFilterActive = (filter) =>
-  filter.defaultValue !== undefined && filter.value?.value !== undefined && filter.value.value !== filter.defaultValue
+  Array.isArray(filter.value)
+    ? filter.value.length > 0
+    : filter.defaultValue !== undefined && filter.value?.value !== undefined && filter.value.value !== filter.defaultValue
 
 export default function ToolbarFilterMenu({ filters }) {
   const [anchorEl, setAnchorEl] = React.useState(null)
@@ -96,17 +99,20 @@ export default function ToolbarFilterMenu({ filters }) {
               >
                 {filter.label}
               </Typography>
-              <Select
-                value={filter.value}
-                options={filter.options}
-                onChange={filter.onChange}
-                styles={folderSelectTheme}
-                menuPortalTarget={document.body}
-                menuPosition="fixed"
-                blurInputOnSelect
-                isSearchable={false}
-                {...filter.selectProps}
-              />
+              {/* A filter can bring its own control, as the tag filter does. */}
+              {filter.render || (
+                <Select
+                  value={filter.value}
+                  options={filter.options}
+                  onChange={filter.onChange}
+                  styles={folderSelectTheme}
+                  menuPortalTarget={document.body}
+                  menuPosition="fixed"
+                  blurInputOnSelect
+                  isSearchable={false}
+                  {...filter.selectProps}
+                />
+              )}
             </Box>
           ))}
         </Box>
