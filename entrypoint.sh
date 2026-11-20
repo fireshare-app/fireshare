@@ -66,6 +66,31 @@ if [ -n "$IMAGE_DIRECTORY" ] && ! mountpoint -q "$IMAGE_DIRECTORY" 2>/dev/null; 
     printf "  \033[33m▸ No volume mounted at %s — uploaded images will not persist\033[0m\n" "$IMAGE_DIRECTORY"
 fi
 
+# ── Media directory access ────────────────────────────────────────────────────
+# /videos and /images hold the user's own library, so unlike /data and
+# /processed they are never chowned recursively. A fresh Docker named volume,
+# or a host path Docker created because it did not exist yet, starts out empty
+# and owned by root, which leaves appuser unable to write uploads into it.
+# Taking ownership of an empty top-level directory touches nothing of the
+# user's; anything else is reported here so the cause shows up in the log
+# rather than only as a failed upload.
+for media_dir in "$VIDEO_DIRECTORY" "$IMAGE_DIRECTORY"; do
+    { [ -n "$media_dir" ] && [ -d "$media_dir" ]; } || continue
+    gosu appuser test -w "$media_dir" && continue
+    # Only a directory that lists successfully and comes back empty counts as
+    # empty; one root cannot even read is left alone. chown alone is not proof
+    # either: a mode without owner write, or a filesystem that ignores chown
+    # (some CIFS and FUSE mounts), still leaves it unwritable, so check again.
+    if listing=$(ls -A "$media_dir" 2>/dev/null) && [ -z "$listing" ] \
+        && chown appuser:appuser "$media_dir" 2>/dev/null \
+        && gosu appuser test -w "$media_dir"; then
+        log "Took ownership of empty $media_dir for UID=$PUID GID=$PGID"
+        continue
+    fi
+    warn "$media_dir is not writable by UID=$PUID GID=$PGID — uploads into it will fail"
+    warn "Set PUID/PGID to the owner of the mounted directory, or change its permissions on the host"
+done
+
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 rm -f "$DATA_DIRECTORY"/*.lock 2>/dev/null || true
 rm -f "$DATA_DIRECTORY/jobs.sqlite" 2>/dev/null || true

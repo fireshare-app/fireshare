@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import random
 import re
@@ -17,7 +16,7 @@ from ..models import Video
 from .. import permissions as P
 from . import api
 from .decorators import require_perm
-from .helpers import sanitize_upload_folder, secure_filename
+from .helpers import parse_client_mtime, sanitize_upload_folder, secure_filename
 from . import transcoding as _transcoding_mod
 
 
@@ -90,11 +89,14 @@ def _reject_duplicate(save_path):
     return resp
 
 
-def _launch_scan_video(save_path, config, tag_ids=None, game_id=None, title=None, uploaded_by=None):
+def _launch_scan_video(save_path, config, tag_ids=None, game_id=None, title=None, uploaded_by=None,
+                       client_mtime=None):
     """
     Launch scan-video and publish an initial transcoding-running status when
     auto-transcode is enabled so SSE subscribers can reflect upload-triggered work.
     Optionally apply tag_ids and game_id to the video after the scan completes.
+    client_mtime is the uploader's original modified time (see
+    helpers.parse_client_mtime), the recorded date when the file has none.
     """
     paths = current_app.config['PATHS']
     data_path = paths['data']
@@ -109,6 +111,8 @@ def _launch_scan_video(save_path, config, tag_ids=None, game_id=None, title=None
         cmd.append(f"--title={title}")
     if uploaded_by is not None:
         cmd.append(f"--uploaded-by={int(uploaded_by)}")
+    if client_mtime is not None:
+        cmd.append(f"--client-mtime={float(client_mtime)}")
     scan_proc = Popen(cmd, shell=False, start_new_session=True)
 
     def reap_and_cleanup():
@@ -141,12 +145,12 @@ def public_upload_video():
         try:
             config = json.load(configfile)
         except:
-            logging.error("Invalid or corrupt config file")
+            logger.error("Invalid or corrupt config file")
             return Response(status=400)
         configfile.close()
 
     if not config['app_config']['allow_public_upload']:
-        logging.warn("A public upload attempt was made but public uploading is disabled")
+        logger.warning("A public upload attempt was made but public uploading is disabled")
         return Response(status=401)
 
     upload_folder = config['app_config']['public_upload_folder_name']
@@ -183,7 +187,8 @@ def public_upload_video():
     if duplicate:
         return duplicate
     _launch_scan_video(save_path, config, *_parse_upload_metadata(),
-                       uploaded_by=_current_uploader_id())
+                       uploaded_by=_current_uploader_id(),
+                       client_mtime=parse_client_mtime(request.form.get('lastModified')))
     return Response(status=201)
 
 
@@ -194,12 +199,12 @@ def public_upload_videoChunked():
         try:
             config = json.load(configfile)
         except:
-            logging.error("Invalid or corrupt config file")
+            logger.error("Invalid or corrupt config file")
             return Response(status=400)
         configfile.close()
 
     if not config['app_config']['allow_public_upload']:
-        logging.warn("A public upload attempt was made but public uploading is disabled")
+        logger.warning("A public upload attempt was made but public uploading is disabled")
         return Response(status=401)
 
     upload_folder = config['app_config']['public_upload_folder_name']
@@ -272,19 +277,23 @@ def public_upload_videoChunked():
             os.remove(save_path)
             return Response(status=500, response="File size mismatch after reassembly")
 
-    except Exception:
+    except Exception as e:
         for chunk_path in chunk_files:
             if os.path.exists(chunk_path):
                 os.remove(chunk_path)
         if os.path.exists(save_path):
             os.remove(save_path)
+        if isinstance(e, PermissionError):
+            raise  # the API's PermissionError handler logs it and explains the cause
+        logger.exception(f"Could not reassemble upload {save_path}: {e}")
         return Response(status=500, response="Error reassembling file")
 
     duplicate = _reject_duplicate(save_path)
     if duplicate:
         return duplicate
     _launch_scan_video(save_path, config, *_parse_upload_metadata(),
-                       uploaded_by=_current_uploader_id())
+                       uploaded_by=_current_uploader_id(),
+                       client_mtime=parse_client_mtime(request.form.get('lastModified')))
     return Response(status=201)
 
 
@@ -387,7 +396,8 @@ def upload_video():
     if duplicate:
         return duplicate
     _launch_scan_video(save_path, config, *_parse_upload_metadata(),
-                       uploaded_by=_current_uploader_id())
+                       uploaded_by=_current_uploader_id(),
+                       client_mtime=parse_client_mtime(request.form.get('lastModified')))
     return Response(status=201)
 
 
@@ -488,11 +498,15 @@ def upload_videoChunked():
                 os.remove(chunk_path)
         if os.path.exists(save_path):
             os.remove(save_path)
+        if isinstance(e, PermissionError):
+            raise  # the API's PermissionError handler logs it and explains the cause
+        logger.exception(f"Could not reassemble upload {save_path}: {e}")
         return Response(status=500, response="Error reassembling file")
 
     duplicate = _reject_duplicate(save_path)
     if duplicate:
         return duplicate
     _launch_scan_video(save_path, config, *_parse_upload_metadata(),
-                       uploaded_by=_current_uploader_id())
+                       uploaded_by=_current_uploader_id(),
+                       client_mtime=parse_client_mtime(request.form.get('lastModified')))
     return Response(status=201)

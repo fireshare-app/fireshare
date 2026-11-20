@@ -33,7 +33,14 @@ import { folderSelectTheme as selectFolderTheme } from '../common/reactSelectThe
 import OutlinedIconButton from '../components/ui/OutlinedIconButton'
 import MarqueeSingleValue, { MarqueeOption } from '../components/ui/MarqueeSingleValue'
 import ToolbarFilterMenu from '../components/nav/ToolbarFilterMenu'
-import { SORT_OPTIONS, PRIVACY_OPTIONS, SORT_SELECT_WIDTH, PRIVACY_SELECT_WIDTH } from '../common/constants'
+import {
+  SORT_OPTIONS,
+  PRIVACY_OPTIONS,
+  SORT_SELECT_WIDTH,
+  PRIVACY_SELECT_WIDTH,
+  TAG_SELECT_WIDTH,
+} from '../common/constants'
+import TagFilter, { hasAllTags, useTagFilter } from '../components/nav/TagFilter'
 import { inputSx, dialogPaperSx, dialogTitleSx } from '../common/modalStyles'
 
 const Dashboard = ({
@@ -76,6 +83,7 @@ const Dashboard = ({
   const [selectedTagsForBulk, setSelectedTagsForBulk] = React.useState([])
   const [tagInputValueBulk, setTagInputValueBulk] = React.useState('')
   const [toolbarTarget, setToolbarTarget] = React.useState(null)
+  const { options: tagOptions, selected: tagFilter, setSelected: handleTagChange } = useTagFilter(videos)
   const theme = useTheme()
   const isMdDown = useMediaQuery(theme.breakpoints.down('md'))
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'))
@@ -207,9 +215,12 @@ const Dashboard = ({
                 .filter((f) => f !== '')[0] === folder.value,
           )
 
-    if (privacyFilter.value === 'all') return folderFiltered
-    return folderFiltered.filter((v) => v.info?.private === (privacyFilter.value === 'private'))
-  }, [filteredVideos, folder, privacyFilter])
+    return folderFiltered.filter(
+      (v) =>
+        (privacyFilter.value === 'all' || v.info?.private === (privacyFilter.value === 'private')) &&
+        hasAllTags(v, tagFilter),
+    )
+  }, [filteredVideos, folder, privacyFilter, tagFilter])
 
   // Sort videos by recorded date or views
   const sortedVideos = React.useMemo(() => {
@@ -488,6 +499,12 @@ const Dashboard = ({
         defaultValue: 'All Videos',
         selectProps: { components: { SingleValue: MarqueeSingleValue, Option: MarqueeOption } },
       },
+    tagOptions.length > 0 && {
+      key: 'tags',
+      label: 'Tags',
+      value: tagFilter,
+      render: <TagFilter options={tagOptions} value={tagFilter} onChange={handleTagChange} />,
+    },
     {
       key: 'sort',
       label: 'Sort by',
@@ -532,6 +549,11 @@ const Dashboard = ({
                         isSearchable={false}
                         components={{ SingleValue: MarqueeSingleValue, Option: MarqueeOption }}
                       />
+                    </Box>
+                  )}
+                  {tagOptions.length > 0 && (
+                    <Box sx={{ width: TAG_SELECT_WIDTH, flexShrink: 0 }}>
+                      <TagFilter options={tagOptions} value={tagFilter} onChange={handleTagChange} />
                     </Box>
                   )}
                   <Box sx={{ minWidth: SORT_SELECT_WIDTH }}>

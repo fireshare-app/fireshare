@@ -2055,14 +2055,34 @@ def _extract_date_from_image_exif(file_path: Path):
         return None
 
 
-def extract_date_from_image_file(file_path: Path):
+def _fallback_file_date(file_path: Path, fallback_timestamp=None):
+    """The last-resort date for a file with no date of its own.
+
+    fallback_timestamp, when given, is the modified time the file had on the
+    uploader's machine. An upload's own mtime is only the moment it finished
+    uploading, so that time is a better guess. Otherwise use the file's mtime.
+    """
+    if fallback_timestamp is not None:
+        created_date = datetime.fromtimestamp(fallback_timestamp)
+        logger.debug(f"Using the uploader's file time for {file_path.name}: {created_date}")
+        return created_date
+    try:
+        created_date = datetime.fromtimestamp(os.path.getmtime(file_path))
+        logger.debug(f"Using file mtime for {file_path.name}: {created_date}")
+        return created_date
+    except Exception as ex:
+        logger.warning(f"Failed to get file mtime for {file_path}: {ex}")
+        return None
+
+
+def extract_date_from_image_file(file_path: Path, fallback_timestamp=None):
     """
     Extract a creation date from an image file.
 
     Tries in order:
     1. EXIF metadata (DateTimeOriginal, DateTimeDigitized, DateTime)
     2. Filename date patterns
-    3. File modification time
+    3. fallback_timestamp when given, else the file modification time
     """
     file_path = Path(file_path)
 
@@ -2079,26 +2099,22 @@ def extract_date_from_image_file(file_path: Path):
         logger.debug(f"Using filename date for {file_path.name}: {filename_date}")
         return filename_date
 
-    try:
-        created_date = datetime.fromtimestamp(os.path.getmtime(file_path))
-        logger.debug(f"Using file mtime for {file_path.name}: {created_date}")
-        return created_date
-    except Exception as ex:
-        logger.warning(f"Failed to get file mtime for {file_path}: {ex}")
-        return None
+    return _fallback_file_date(file_path, fallback_timestamp)
 
 
-def extract_date_from_file(file_path: Path):
+def extract_date_from_file(file_path: Path, fallback_timestamp=None):
     """
     Extract a recording date from a video file.
 
     Tries the following sources in order:
     1. Video metadata (creation_time, date tags via ffprobe)
     2. Filename patterns (common screen recording software formats)
-    3. File creation timestamp
+    3. fallback_timestamp when given, else the file modification time
 
     Args:
         file_path: Path to the video file
+        fallback_timestamp: the uploader's original modified time (seconds since
+            the epoch), used in place of an upload's own mtime
 
     Returns:
         datetime object with the best available date, or None if file doesn't exist
@@ -2121,12 +2137,6 @@ def extract_date_from_file(file_path: Path):
         logger.debug(f"Using filename date for {file_path.name}: {filename_date}")
         return filename_date
     
-    # 3. Fall back to file modification time (mtime is stable; ctime changes on move/chmod)
-    try:
-        created_timestamp = os.path.getmtime(file_path)
-        created_date = datetime.fromtimestamp(created_timestamp)
-        logger.debug(f"Using file mtime for {file_path.name}: {created_date}")
-        return created_date
-    except Exception as ex:
-        logger.warning(f"Failed to get file creation time for {file_path}: {ex}")
-        return None
+    # 3. Fall back to the uploader's file time, else the modification time
+    # (mtime is stable; ctime changes on move/chmod)
+    return _fallback_file_date(file_path, fallback_timestamp)

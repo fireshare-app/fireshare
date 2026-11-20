@@ -6,7 +6,8 @@ import Select from 'react-select'
 import { FolderService } from '../services'
 import VideoCards from '../components/cards/VideoCards'
 import ImageCards from '../components/cards/ImageCards'
-import EditImageModal from '../components/modal/EditImageModal'
+import ImageModal from '../components/modal/ImageModal'
+import { applyImageUpdate } from '../common/utils'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import SnackbarAlert from '../components/alert/SnackbarAlert'
 import { SORT_OPTIONS, SORT_SELECT_WIDTH } from '../common/constants'
@@ -22,6 +23,7 @@ const FolderView = ({ authenticated, cardSize, searchText }) => {
   const [toolbarLeftTarget, setToolbarLeftTarget] = React.useState(null)
   const [toolbarLeftMobileTarget, setToolbarLeftMobileTarget] = React.useState(null)
   const [modalImage, setModalImage] = React.useState(null)
+  const [modalImageEdit, setModalImageEdit] = React.useState(false)
   const [alert, setAlert] = React.useState({ open: false })
 
   React.useEffect(() => {
@@ -73,23 +75,16 @@ const FolderView = ({ authenticated, cardSize, searchText }) => {
     })
   }, [media, searchText, sortOrder])
 
-  const handleImageOpen = React.useCallback((image) => setModalImage(image), [])
+  const handleImageOpen = React.useCallback((image, options) => {
+    setModalImage(image)
+    setModalImageEdit(Boolean(options?.edit))
+  }, [])
 
   const handleImageModalClose = (update) => {
     if (update) {
       const updateImage = (img) => {
         if (img.image_id !== modalImage?.image_id) return img
-        return {
-          ...img,
-          info: {
-            ...img.info,
-            ...(update.title !== undefined && { title: update.title }),
-            ...(update.private !== undefined && { private: update.private }),
-          },
-          ...(update.game !== undefined && { game: update.game }),
-          ...(update.created_at !== undefined && { created_at: update.created_at }),
-          ...(update.uploader !== undefined && { uploader: update.uploader }),
-        }
+        return applyImageUpdate(img, update)
       }
       setMedia((prev) => prev.map(updateImage))
     }
@@ -163,10 +158,11 @@ const FolderView = ({ authenticated, cardSize, searchText }) => {
       </SnackbarAlert>
 
       {folder.media_type === 'image' && (
-        <EditImageModal
+        <ImageModal
           open={Boolean(modalImage)}
           onClose={handleImageModalClose}
           image={modalImage}
+          startInEditMode={modalImageEdit}
           alertHandler={setAlert}
           authenticated={authenticated}
           onNext={handleImageModalNext}
@@ -202,6 +198,7 @@ const FolderView = ({ authenticated, cardSize, searchText }) => {
             feedView={!authenticated}
             size={cardSize}
             onImageOpen={handleImageOpen}
+            removeOnMove
           />
         ) : (
           <VideoCards videos={filteredMedia} authenticated={authenticated} feedView={!authenticated} size={cardSize} />

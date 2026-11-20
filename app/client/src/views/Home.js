@@ -5,13 +5,21 @@ import Select from 'react-select'
 import CompactVideoCard from '../components/cards/CompactVideoCard'
 import MasonryImageCard from '../components/cards/MasonryImageCard'
 import VideoModal from '../components/modal/VideoModal'
-import EditImageModal from '../components/modal/EditImageModal'
+import ImageModal from '../components/modal/ImageModal'
+import { applyImageUpdate } from '../common/utils'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import SnackbarAlert from '../components/alert/SnackbarAlert'
 import ToolbarFilterMenu from '../components/nav/ToolbarFilterMenu'
 import { VideoService, ImageService } from '../services'
 import { folderSelectTheme } from '../common/reactSelectThemes'
-import { SORT_OPTIONS, PRIVACY_OPTIONS, SORT_SELECT_WIDTH, PRIVACY_SELECT_WIDTH } from '../common/constants'
+import {
+  SORT_OPTIONS,
+  PRIVACY_OPTIONS,
+  SORT_SELECT_WIDTH,
+  PRIVACY_SELECT_WIDTH,
+  TAG_SELECT_WIDTH,
+} from '../common/constants'
+import TagFilter, { hasAllTags, useTagFilter } from '../components/nav/TagFilter'
 
 const TYPE_OPTIONS = [
   { value: 'all', label: 'All' },
@@ -150,6 +158,7 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
   const [toolbarTarget, setToolbarTarget] = React.useState(null)
   const [videoModal, setVideoModal] = React.useState({ open: false, id: null })
   const [modalImage, setModalImage] = React.useState(null)
+  const [modalImageEdit, setModalImageEdit] = React.useState(false)
   const [width, setWidth] = React.useState(0)
   const containerRef = React.useRef()
   const countRef = React.useRef(0)
@@ -237,6 +246,9 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
     [videos, images],
   )
 
+  const allMedia = React.useMemo(() => items.map((item) => item.raw), [items])
+  const { options: tagOptions, selected: tagFilter, setSelected: handleTagChange } = useTagFilter(allMedia)
+
   const displayItems = React.useMemo(() => {
     const tagMatches = (searchText || '').match(/#(\w+)/g) || []
     const tagNames = tagMatches.map((t) => t.slice(1).toLowerCase())
@@ -249,6 +261,7 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
       const title = item.raw.info?.title || ''
       const gameName = item.raw.game?.name || ''
       if (pattern && !pattern.test(title) && !pattern.test(gameName)) return false
+      if (!hasAllTags(item.raw, tagFilter)) return false
       return tagNames.every((tagName) =>
         (item.raw.tags || []).some(
           (t) => t.name.toLowerCase() === tagName || t.name.replace(/_/g, ' ').toLowerCase() === tagName,
@@ -274,7 +287,7 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
         }
       }
     })
-  }, [items, searchText, typeFilter, privacyFilter, sortOrder])
+  }, [items, searchText, typeFilter, privacyFilter, sortOrder, tagFilter])
 
   // Day headers only make sense on a chronological sort. Sorted by views or
   // name the feed is one continuous waterfall.
@@ -306,7 +319,10 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
 
   const handleAlert = React.useCallback((a) => setAlert(a), [])
   const openVideo = React.useCallback((id) => setVideoModal({ open: true, id }), [])
-  const openImage = React.useCallback((image) => setModalImage(image), [])
+  const openImage = React.useCallback((image, options) => {
+    setModalImage(image)
+    setModalImageEdit(Boolean(options?.edit))
+  }, [])
   const removeVideo = React.useCallback((id) => setVideos((prev) => prev.filter((v) => v.video_id !== id)), [])
   const removeImage = React.useCallback((id) => setImages((prev) => prev.filter((i) => i.image_id !== id)), [])
 
@@ -335,17 +351,7 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
         prev.map((img) =>
           img.image_id !== modalImage.image_id
             ? img
-            : {
-                ...img,
-                info: {
-                  ...img.info,
-                  ...(update.title !== undefined && { title: update.title }),
-                  ...(update.private !== undefined && { private: update.private }),
-                },
-                ...(update.game !== undefined && { game: update.game }),
-                ...(update.created_at !== undefined && { created_at: update.created_at }),
-                ...(update.uploader !== undefined && { uploader: update.uploader }),
-              },
+            : applyImageUpdate(img, update),
         ),
       )
     }
@@ -380,6 +386,12 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
       options: TYPE_OPTIONS,
       onChange: setTypeFilter,
       defaultValue: TYPE_OPTIONS[0].value,
+    },
+    tagOptions.length > 0 && {
+      key: 'tags',
+      label: 'Tags',
+      value: tagFilter,
+      render: <TagFilter options={tagOptions} value={tagFilter} onChange={handleTagChange} />,
     },
     {
       key: 'sort',
@@ -425,6 +437,11 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
                     </ToggleButton>
                   ))}
                 </ToggleButtonGroup>
+                {tagOptions.length > 0 && (
+                  <Box sx={{ width: TAG_SELECT_WIDTH, flexShrink: 0 }}>
+                    <TagFilter options={tagOptions} value={tagFilter} onChange={handleTagChange} />
+                  </Box>
+                )}
                 <Box sx={{ minWidth: SORT_SELECT_WIDTH }}>
                   <Select
                     value={sortOrder}
@@ -468,10 +485,11 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
         onPrev={() => stepVideo(-1)}
         onSuggestionSelect={(id) => setVideoModal({ open: true, id })}
       />
-      <EditImageModal
+      <ImageModal
         open={Boolean(modalImage)}
         onClose={handleImageModalClose}
         image={modalImage}
+        startInEditMode={modalImageEdit}
         alertHandler={setAlert}
         authenticated={authenticated}
         onNext={() => stepImage(1)}

@@ -17,15 +17,25 @@ from .. import db, logger, util
 from ..models import Image, ImageInfo, ImageView, ImageGameLink, ImageTagLink, GameMetadata, MediaFolder
 from .. import permissions as P
 from . import api
-from .helpers import sanitize_upload_folder, secure_filename, viewer_sees_private
+from .helpers import (
+    MoveRefused,
+    move_image_file,
+    parse_client_mtime,
+    resolve_media_subfolder,
+    sanitize_upload_folder,
+    secure_filename,
+    viewer_sees_private,
+)
 from .decorators import demo_restrict, require_perm
 
 
 SUPPORTED_IMAGE_TYPES = {'jpg', 'jpeg', 'png', 'webp', 'gif'}
 
 
-def _launch_scan_image(save_path, config, game_id=None, tag_ids=None, title=None, uploaded_by=None):
-    """Launch scan-image in the background after an image upload."""
+def _launch_scan_image(save_path, config, game_id=None, tag_ids=None, title=None, uploaded_by=None,
+                       client_mtime=None):
+    """Launch scan-image in the background after an image upload. client_mtime is
+    the uploader's original modified time (see helpers.parse_client_mtime)."""
     image_directory = current_app.config.get('IMAGE_DIRECTORY')
     if not image_directory:
         return None
@@ -39,9 +49,21 @@ def _launch_scan_image(save_path, config, game_id=None, tag_ids=None, title=None
         cmd.append(f"--title={title}")
     if uploaded_by is not None:
         cmd.append(f"--uploaded-by={int(uploaded_by)}")
+    if client_mtime is not None:
+        cmd.append(f"--client-mtime={float(client_mtime)}")
     proc = Popen(cmd, shell=False, start_new_session=True)
     threading.Thread(target=proc.wait, daemon=True).start()
     return proc
+
+
+def _client_mtimes(files):
+    """The uploader's original modified time for each uploaded file, in order, from
+    the lastModified values sent with them. When the counts do not line up the
+    values cannot be matched to files, so none are used."""
+    values = request.form.getlist('lastModified')
+    if len(values) != len(files):
+        return [None] * len(files)
+    return [parse_client_mtime(v) for v in values]
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +105,7 @@ def upload_image():
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     saved = 0
-    for file in files:
+    for file, last_modified in zip(files, _client_mtimes(files)):
         if not file.filename:
             continue
         filename = secure_filename(file.filename)
@@ -100,7 +122,8 @@ def upload_image():
         file.save(save_path)
         _launch_scan_image(save_path, config, game_id=game_id, tag_ids=tag_ids,
                            title=title if len(files) == 1 else None,
-                           uploaded_by=current_user.id if current_user.is_authenticated else None)
+                           uploaded_by=current_user.id if current_user.is_authenticated else None,
+                           client_mtime=last_modified)
         saved += 1
 
     if saved == 0:
@@ -145,7 +168,7 @@ def upload_image_public():
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     saved = 0
-    for file in files:
+    for file, last_modified in zip(files, _client_mtimes(files)):
         if not file.filename:
             continue
         filename = secure_filename(file.filename)
@@ -162,7 +185,8 @@ def upload_image_public():
         file.save(save_path)
         # Public endpoint: attributed only when the caller happens to be signed in.
         _launch_scan_image(save_path, config, game_id=game_id, tag_ids=tag_ids,
-                           uploaded_by=current_user.id if current_user.is_authenticated else None)
+                           uploaded_by=current_user.id if current_user.is_authenticated else None,
+                           client_mtime=last_modified)
         saved += 1
 
     if saved == 0:
@@ -374,6 +398,48 @@ def delete_image(image_id):
     return Response(status=200)
 
 
+@api.route('/api/image/move/<image_id>', methods=['POST'])
+@require_perm(P.EDIT_OWN, P.EDIT_ANY)
+@demo_restrict
+def move_image(image_id):
+    img = Image.query.filter_by(image_id=image_id).first()
+    if not img:
+        return Response(status=404, response=f"An image with id: {image_id}, does not exist.")
+    if not current_user.can_modify(img, 'edit'):
+        return Response(status=403, response='You can only move your own uploads.')
+
+    target_folder = ((request.get_json(silent=True) or {}).get('folder') or '').strip()
+    if not target_folder:
+        return Response(status=400, response='A target folder must be provided.')
+
+    image_directory = current_app.config.get('IMAGE_DIRECTORY')
+    if not image_directory:
+        return Response(status=503, response='IMAGE_DIRECTORY is not configured.')
+    resolved = resolve_media_subfolder(Path(image_directory), target_folder)
+    if not resolved:
+        return Response(status=400, response=f"Folder '{target_folder}' is not inside the image directory.")
+    target_folder_path, target_folder = resolved
+    if not target_folder_path.is_dir():
+        return Response(status=400, response=f"Folder '{target_folder}' does not exist.")
+
+    old_folder_id = img.folder_id
+    try:
+        move_image_file(img, image_directory, target_folder_path, target_folder, current_app.config['PATHS']['processed'])
+        db.session.commit()
+    except MoveRefused as e:
+        db.session.rollback()
+        return Response(status=e.status, response=str(e))
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error moving image {image_id}: {e}")
+        return Response(status=500, response=str(e))
+
+    if old_folder_id != img.folder_id:
+        MediaFolder.cleanup_if_orphaned(old_folder_id, Image)
+    logger.info(f"Moved image {image_id} to '{target_folder}'")
+    return jsonify({'path': img.path})
+
+
 # ---------------------------------------------------------------------------
 # Serve image files
 # ---------------------------------------------------------------------------
@@ -414,7 +480,9 @@ def serve_image_original():
     paths = current_app.config['PATHS']
     orig_path = paths['processed'] / 'image_links' / f"{image_id}{img.extension}"
     if orig_path.exists():
-        filename = f"{image_id}{img.extension}"
+        # Saved under its title, like a downloaded video, falling back to its id.
+        title = secure_filename((img.info.title or '').strip()) if img.info else ''
+        filename = f"{title or image_id}{img.extension}"
         return send_file(str(orig_path), as_attachment=True, download_name=filename)
     return Response(status=404)
 

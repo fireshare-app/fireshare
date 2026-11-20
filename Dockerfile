@@ -208,7 +208,6 @@ RUN mkdir -p /etc/vulkan/icd.d /usr/share/glvnd/egl_vendor.d && printf '%s\n' \
     '{ "file_format_version": "1.0.0", "ICD": { "library_path": "libEGL_nvidia.so.0" } }' \
     > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
-RUN adduser --disabled-password --gecos '' nginx
 RUN ln -sf /dev/stdout /var/log/nginx/access.log \
     && ln -sf /dev/stderr /var/log/nginx/error.log
 RUN mkdir /data && mkdir /processed

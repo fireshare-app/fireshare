@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import signal
 import subprocess
@@ -10,7 +9,7 @@ import sqlalchemy as sa
 from flask import current_app, jsonify, Response
 from flask_login import login_required
 
-from .. import db, util
+from .. import db, logger, util
 from ..models import TranscodeJob, VideoInfo
 from .. import permissions as P
 from . import api
@@ -55,7 +54,7 @@ def _recover_stale_jobs(data_path):
                 job.status = 'pending'
                 job.started_at = None
             db.session.commit()
-            logging.info(f"Reset {len(stale)} stale transcode job(s) to pending")
+            logger.info(f"Reset {len(stale)} stale transcode job(s) to pending")
 
 
 def _drain_queue(app, data_path):
@@ -110,7 +109,7 @@ def _drain_queue(app, data_path):
                 job.completed_at = datetime.utcnow()
                 db.session.commit()
             except Exception as e:
-                logging.error(f'Transcoding drain failed for job {job.id} (video_id={job.video_id}): {e}')
+                logger.error(f'Transcoding drain failed for job {job.id} (video_id={job.video_id}): {e}')
                 try:
                     job.status = 'failed'
                     job.completed_at = datetime.utcnow()

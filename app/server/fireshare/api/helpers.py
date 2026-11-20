@@ -6,14 +6,37 @@ import shutil
 import time
 from functools import wraps
 from pathlib import Path
+from datetime import datetime
 from flask import current_app
 from .. import db, logger
-from ..models import TranscodeJob, Video
+from ..models import TranscodeJob, Video, MediaFolder, ImageFolderRule, ImageGameLink
 
 
 def secure_filename(filename):
     clean = re.sub(r"[/\\?%*:|\"<>\x7F\x00-\x1F\s]", "-", filename)
     return clean
+
+
+def parse_client_mtime(last_modified_ms):
+    """The modified time an uploaded file had on the uploader's machine, in
+    seconds since the epoch, or None.
+
+    When a file carries no date in its metadata or its name, the scan falls back
+    to its mtime, which for an upload is only the moment the upload finished.
+    Browsers report File.lastModified (milliseconds since the epoch) and the
+    upload forms send it as `lastModified`; the scan uses it in place of that
+    fallback. It is handed to the scan rather than written onto the file, because
+    the file's mtime also sets when the video was added to the library.
+    Anything missing, malformed or in the future gives None, and such a file is
+    dated by its upload time as before.
+    """
+    try:
+        mtime = int(last_modified_ms) / 1000
+    except (TypeError, ValueError):
+        return None
+    if mtime <= 0 or mtime > time.time() + 24 * 60 * 60:
+        return None
+    return mtime
 
 
 # Path separators and control characters are never valid in a folder name. Spaces
@@ -61,6 +84,63 @@ def resolve_media_subfolder(root, folder):
         return None
     relative = os.path.relpath(candidate, root_str)
     return Path(candidate), ('' if relative == '.' else Path(relative).as_posix())
+
+
+def get_or_create_media_folder(dirname, media_type):
+    folder = MediaFolder.query.filter_by(path=dirname, media_type=media_type).first()
+    if folder:
+        return folder
+    now = datetime.utcnow()
+    folder = MediaFolder(path=dirname, media_type=media_type, private=True, created_at=now, updated_at=now)
+    db.session.add(folder)
+    db.session.flush()
+    return folder
+
+
+class MoveRefused(Exception):
+    """A move that can't be made, with a message fit to show the person who asked."""
+
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
+
+
+def move_image_file(img, image_root, target_folder_path, target_folder, processed_path):
+    """Move one image into an existing folder under the image directory.
+
+    target_folder_path and target_folder come from resolve_media_subfolder(). The file
+    moves, its image_links symlink follows it, and the row's path and folder change to
+    match. A game rule on the target folder links the image to that game, as a scan of
+    that folder would. Raises MoveRefused when the image is already there or the name
+    is taken; the caller commits.
+    """
+    old_file_path = Path(image_root) / img.path
+    filename = Path(img.path).name
+    new_path = f"{target_folder}/{filename}" if target_folder else filename
+    new_file_path = target_folder_path / filename
+
+    if old_file_path.resolve() == new_file_path.resolve():
+        raise MoveRefused('Already in that folder.')
+    if new_file_path.exists():
+        raise MoveRefused(f"A file named '{filename}' already exists in '{target_folder}'.", status=409)
+
+    shutil.move(str(old_file_path), str(new_file_path))
+
+    link_path = Path(processed_path) / 'image_links' / f"{img.image_id}{img.extension}"
+    if link_path.exists() or link_path.is_symlink():
+        link_path.unlink()
+    os.symlink(new_file_path.absolute(), link_path)
+
+    img.path = new_path
+    img.folder_id = get_or_create_media_folder(target_folder.split('/')[0], "image").id if target_folder else None
+
+    folder_rule = ImageFolderRule.query.filter_by(folder_path=target_folder).first()
+    if folder_rule:
+        existing_link = ImageGameLink.query.filter_by(image_id=img.image_id).first()
+        if existing_link:
+            existing_link.game_id = folder_rule.game_id
+        else:
+            db.session.add(ImageGameLink(image_id=img.image_id, game_id=folder_rule.game_id, created_at=datetime.utcnow()))
 
 
 def remove_derived_dir(derived_path, attempts=4, delay=0.25):

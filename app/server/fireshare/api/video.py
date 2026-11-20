@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import posixpath
 import random
@@ -562,7 +561,7 @@ def delete_video(id):
     if video and not current_user.can_modify(video, 'delete'):
         return Response(status=403, response='You can only delete your own uploads.')
     if video:
-        logging.info(f"Deleting video: {video.video_id}")
+        logger.info(f"Deleting video: {video.video_id}")
 
         paths = current_app.config['PATHS']
         file_path = paths['video'] / video.path
@@ -646,11 +645,11 @@ def move_video(id):
 
         db.session.commit()
 
-        logging.info(f"Moved video {id} from {old_file_path} to {new_file_path}")
+        logger.info(f"Moved video {id} from {old_file_path} to {new_file_path}")
         return Response(status=200)
     except Exception as e:
         db.session.rollback()
-        logging.error(f"Error moving video {id}: {e}")
+        logger.error(f"Error moving video {id}: {e}")
         return Response(status=500, response=str(e))
 
 
