@@ -14,6 +14,7 @@ import {
   copyLink,
   downloadFile,
   downloadName,
+  getImageApiUrl,
   getImageUrl,
   getPublicImageUrl,
   getSetting,
@@ -91,7 +92,10 @@ const ImageModal = ({ open, onClose, image, alertHandler, authenticated, onNext,
 
   const imageId = image?.image_id
   const shown = details || image
-  const fullImageUrl = getImageUrl(imageId)
+  // nginx serves the WebP as a plain file, with no fallback, so an image without
+  // one would show as its title. The API sends the original instead.
+  const [webpFailedFor, setWebpFailedFor] = React.useState(null)
+  const fullImageUrl = webpFailedFor === imageId ? getImageApiUrl(imageId) : getImageUrl(imageId)
   const canTagGames = authenticated || getSetting('ui_config')?.allow_public_game_tag
 
   // The saved values, which the edit fields start from and Cancel returns to.
@@ -152,7 +156,11 @@ const ImageModal = ({ open, onClose, image, alertHandler, authenticated, onNext,
       setImgLoaded(false)
       const preload = new window.Image()
       preload.onload = () => !cancelled && setImgLoaded(true)
-      preload.onerror = () => !cancelled && setImgLoaded(true)
+      preload.onerror = () => {
+        if (cancelled) return
+        setWebpFailedFor(image.image_id)
+        setImgLoaded(true)
+      }
       preload.src = fullImageUrl
     }
     return () => {
@@ -571,6 +579,7 @@ const ImageModal = ({ open, onClose, image, alertHandler, authenticated, onNext,
             src={fullImageUrl}
             alt={savedTitle}
             onLoad={() => setImgLoaded(true)}
+            onError={() => setWebpFailedFor(imageId)}
             style={{
               maxWidth: '100%',
               maxHeight: '100%',
