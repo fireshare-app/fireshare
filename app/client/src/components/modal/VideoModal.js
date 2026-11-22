@@ -6,16 +6,13 @@ import {
   CircularProgress,
   IconButton,
   InputAdornment,
-  Popover,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
 import TagChip from '../ui/TagChip'
-import { DayPicker } from 'react-day-picker'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
-import CalendarMonthIcon from '@mui/icons-material/CalendarMonth'
 import CloseIcon from '@mui/icons-material/Close'
 import CheckIcon from '@mui/icons-material/Check'
 import LinkIcon from '@mui/icons-material/Link'
@@ -25,7 +22,6 @@ import LockIcon from '@mui/icons-material/Lock'
 import AddPhotoAlternateIcon from '@mui/icons-material/AddPhotoAlternate'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import PhotoCameraIcon from '@mui/icons-material/PhotoCamera'
-import './datepicker-dark.css'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 import {
@@ -58,94 +54,12 @@ import MediaModalShell, {
   panelButtonSx,
 } from './MediaModalShell'
 import { GameField, TagsField } from './MediaEditFields'
+import DateField from './DateField'
 
 const URL = getUrl()
 const PURL = getPublicWatchUrl()
 const APP_ORIGIN = window.location.origin
 
-
-const timeInputStyle = {
-  background: '#FFFFFF0D',
-  border: '1px solid #FFFFFF26',
-  borderRadius: 6,
-  color: 'white',
-  fontSize: 13,
-  padding: '4px 8px',
-  colorScheme: 'dark',
-  flex: 1,
-}
-
-const DateField = ({ selectedDate, selectedTime, onDateChange, onTimeChange }) => {
-  const [anchor, setAnchor] = React.useState(null)
-  const display = selectedDate
-    ? selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
-      (selectedTime ? ` at ${selectedTime}` : '')
-    : null
-  return (
-    <>
-      <Box
-        onClick={(e) => setAnchor(e.currentTarget)}
-        sx={{ ...rowBoxSx, cursor: 'pointer', py: 1.1, '&:hover': { borderColor: '#FFFFFF55' } }}
-      >
-        <CalendarMonthIcon sx={{ color: '#FFFFFF66', fontSize: 20 }} />
-        <Typography sx={{ color: display ? 'white' : '#FFFFFF4D', fontSize: 14, flex: 1 }}>
-          {display || 'Pick a date…'}
-        </Typography>
-        {selectedDate && (
-          <IconButton
-            size="small"
-            onClick={(e) => {
-              e.stopPropagation()
-              onDateChange(null)
-              onTimeChange('')
-            }}
-            sx={{ color: '#FFFFFF66', '&:hover': { color: 'white' }, p: 0.25 }}
-          >
-            <CloseIcon sx={{ fontSize: 16 }} />
-          </IconButton>
-        )}
-      </Box>
-      <Popover
-        open={Boolean(anchor)}
-        anchorEl={anchor}
-        onClose={() => setAnchor(null)}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
-        slotProps={{ paper: { sx: { bgcolor: 'transparent', boxShadow: 'none', mt: 0.5 } } }}
-      >
-        <div className="fireshare-rdp">
-          <DayPicker
-            animate
-            mode="single"
-            selected={selectedDate}
-            onSelect={(d) => onDateChange(d || null)}
-            defaultMonth={selectedDate || new Date()}
-            captionLayout="dropdown"
-            startMonth={new Date(1970, 0)}
-            endMonth={new Date(new Date().getFullYear() + 1, 11)}
-          />
-          <Box sx={{ px: 1, pb: 1, display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <Typography sx={{ color: '#FFFFFFB3', fontSize: 13 }}>Time</Typography>
-            <input
-              type="time"
-              value={selectedTime}
-              onChange={(e) => onTimeChange(e.target.value)}
-              style={timeInputStyle}
-            />
-            <Button
-              size="small"
-              variant="contained"
-              onClick={() => setAnchor(null)}
-              sx={{ bgcolor: '#3399FF', '&:hover': { bgcolor: '#1976D2' }, minWidth: 60 }}
-            >
-              Done
-            </Button>
-          </Box>
-        </div>
-      </Popover>
-    </>
-  )
-}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
