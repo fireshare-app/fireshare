@@ -58,10 +58,6 @@ export const GameField = ({ game, onLinked, onUnlink, onError }) => (
 // creates it; a comma adds several at once.
 export const TagsField = ({ tags, allTags, onAdd, onRemove }) => {
   const [inputValue, setInputValue] = React.useState('')
-  const add = (tag) => {
-    setInputValue('')
-    onAdd(tag)
-  }
   const findTag = (name) => allTags.find((t) => t.name.toLowerCase() === name.toLowerCase())
 
   return (
@@ -77,11 +73,15 @@ export const TagsField = ({ tags, allTags, onAdd, onRemove }) => {
         value={tags}
         inputValue={inputValue}
         onInputChange={(_, v) => setInputValue(v)}
+        // Enter only ever arrives here: the Autocomplete adds the highlighted
+        // suggestion, or else what was typed, and clears the input. Adding on Enter in
+        // onKeyDown as well sent the same new tag twice, and the second create failed.
         onChange={(_, newValues) => {
-          if (newValues.length > tags.length) {
-            const added = newValues[newValues.length - 1]
-            add(typeof added === 'string' ? { name: added } : added)
-          }
+          if (newValues.length <= tags.length) return
+          const added = newValues[newValues.length - 1]
+          if (typeof added !== 'string') return onAdd(added)
+          const name = added.trim()
+          if (name) onAdd(findTag(name) || { name })
         }}
         renderTags={(value) =>
           value.map((tag) => (
@@ -96,10 +96,6 @@ export const TagsField = ({ tags, allTags, onAdd, onRemove }) => {
             sx={inputSx}
             inputProps={{ ...params.inputProps, maxLength: 12 }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && inputValue.trim()) {
-                e.preventDefault()
-                add(findTag(inputValue.trim()) || { name: inputValue.trim() })
-              }
               if (e.key === ',') {
                 e.preventDefault()
                 const parts = inputValue

@@ -595,8 +595,20 @@ def image_id(path: Path, mb: int = 16) -> str:
     return xxhash.xxh3_128_hexdigest(file_header)
 
 
+# libwebp refuses to encode an image wider or taller than this.
+WEBP_MAX_DIMENSION = 16383
+
+
+def _webp_ready(img):
+    """img in a mode WebP can store. convert() copies even when the mode already
+    matches, which for a very large image is hundreds of MB spent on nothing."""
+    mode = 'RGBA' if img.mode in ('RGBA', 'LA', 'P') else 'RGB'
+    return img if img.mode == mode else img.convert(mode)
+
+
 def create_image_webp(src_path: Path, out_path: Path, quality: int = 90) -> bool:
-    """Convert an image to full-quality WebP for the detail/viewer page."""
+    """Convert an image to full-quality WebP for the detail/viewer page. One wider or
+    taller than WebP allows is scaled down to fit, keeping its aspect ratio."""
     try:
         from PIL import Image as PILImage
         s = time.time()
@@ -604,7 +616,12 @@ def create_image_webp(src_path: Path, out_path: Path, quality: int = 90) -> bool
             # Handle animated GIFs — use first frame only
             if hasattr(img, 'n_frames') and img.n_frames > 1:
                 img.seek(0)
-            img = img.convert('RGBA') if img.mode in ('RGBA', 'LA', 'P') else img.convert('RGB')
+            img = _webp_ready(img)
+            if max(img.size) > WEBP_MAX_DIMENSION:
+                original_size = img.size
+                img.thumbnail((WEBP_MAX_DIMENSION, WEBP_MAX_DIMENSION), PILImage.LANCZOS)
+                logger.info(f'Scaled {src_path.name} from {original_size[0]}x{original_size[1]} to '
+                            f'{img.width}x{img.height} to fit the WebP size limit')
             img.save(str(out_path), 'WEBP', quality=quality, method=4)
         e = time.time()
         logger.debug(f'Created full-quality WebP {str(out_path)} in {e - s:.2f}s')
@@ -622,11 +639,16 @@ def create_image_thumbnail(src_path: Path, out_path: Path, max_width: int = 400,
         with PILImage.open(str(src_path)) as img:
             if hasattr(img, 'n_frames') and img.n_frames > 1:
                 img.seek(0)
-            img = img.convert('RGBA') if img.mode in ('RGBA', 'LA', 'P') else img.convert('RGB')
+            size = None
             if img.width > max_width:
-                ratio = max_width / img.width
-                new_height = int(img.height * ratio)
-                img = img.resize((max_width, new_height))
+                size = (max_width, max(1, int(img.height * max_width / img.width)))
+                # A JPEG can decode straight to 1/2, 1/4 or 1/8 of its size, so a very
+                # large photo never has to be held in memory at full resolution just to
+                # make a 400px card. Other formats ignore this.
+                img.draft(None, size)
+            img = _webp_ready(img)
+            if size and img.size != size:
+                img = img.resize(size)
             img.save(str(out_path), 'WEBP', quality=quality, method=4)
         e = time.time()
         logger.debug(f'Created thumbnail {str(out_path)} in {e - s:.2f}s')
