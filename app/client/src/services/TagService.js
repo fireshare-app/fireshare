@@ -10,6 +10,17 @@ const service = {
   createTag(data) {
     return Api().post('/api/tags', data)
   },
+  // The tag by this name, made if there is none yet. The server answers 409 with the
+  // existing tag when there is one, including one the client did not know about: made
+  // elsewhere since the tags were loaded, or "my tag" when "my_tag" exists.
+  findOrCreateTag(name) {
+    return Api()
+      .post('/api/tags', { name })
+      .catch((err) => {
+        if (err.response?.status === 409 && err.response.data?.id) return err.response
+        throw err
+      })
+  },
   updateTag(tagId, data) {
     return Api().put(`/api/tags/${tagId}`, data)
   },

@@ -11,6 +11,7 @@ import threading
 
 from flask import current_app, jsonify, request, Response, send_file, render_template, redirect
 from flask_login import login_required, current_user
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql import text
 
 from .. import db, logger, util
@@ -592,7 +593,13 @@ def add_image_tag(image_id):
         return Response(status=400)
     if not ImageTagLink.query.filter_by(image_id=image_id, tag_id=tag_id).first():
         db.session.add(ImageTagLink(image_id=image_id, tag_id=tag_id, created_at=datetime.utcnow()))
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            # A request sent at the same time linked it first, so it is linked.
+            db.session.rollback()
+            if not ImageTagLink.query.filter_by(image_id=image_id, tag_id=tag_id).first():
+                raise
     return Response(status=200)
 
 

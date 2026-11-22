@@ -314,9 +314,9 @@ const ImageModal = ({ open, onClose, image, alertHandler, authenticated, onNext,
     try {
       let tagToAdd = tag
       if (!tag.id) {
-        const res = await TagService.createTag({ name: tag.name })
+        const res = await TagService.findOrCreateTag(tag.name)
         tagToAdd = res.data
-        setAllTags((prev) => [...prev, res.data])
+        setAllTags((prev) => (prev.some((t) => t.id === res.data.id) ? prev : [...prev, res.data]))
       }
       if (tags.some((t) => t.id === tagToAdd.id)) return
       await ImageService.addTag(imageId, tagToAdd.id)

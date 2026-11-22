@@ -286,9 +286,9 @@ const VideoModal = ({
       let tagId = tag.id
       if (!tagId) {
         // Create the tag if it doesn't exist yet
-        const res = await TagService.createTag({ name: tag.name })
+        const res = await TagService.findOrCreateTag(tag.name)
         tagId = res.data.id
-        setAllTags((prev) => [...prev, res.data])
+        setAllTags((prev) => (prev.some((t) => t.id === res.data.id) ? prev : [...prev, res.data]))
       }
       await TagService.addTagToVideo(vid.video_id, tagId)
       const updatedTags = (await TagService.getVideoTags(vid.video_id)).data
