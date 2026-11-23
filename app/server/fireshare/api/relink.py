@@ -13,12 +13,14 @@ import fcntl
 import json
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from subprocess import Popen
 
 from flask import current_app, jsonify, request, Response
 
@@ -34,13 +36,13 @@ from .scan import _get_or_create_media_folder
 _CHUNK_FILE_PATTERN = re.compile(r'\.part\d{4}$')
 _TRANSCODE_PATTERN = re.compile(r'-(?:720p|1080p)\.mp4$', re.IGNORECASE)
 
-# The scan runs in a thread of whichever gunicorn worker took the POST, and the
-# dialog polls for it through any of them. Its progress used to live in a dict in
-# that one worker, so a poll that reached another worker found no scan at all, and
-# the dialog showed "Hashed 0 files" with nothing matched. Every worker reads this
-# file instead. It sits in shared memory under a fireshare_ name, which
-# gunicorn.conf.py's on_starting clears with the sentinels, so a scan never
-# outlives the server that ran it.
+# The scan runs in a process of its own (`fireshare relink-scan`), so a gunicorn
+# worker being recycled cannot end it partway, and the dialog polls for it through
+# any worker. Its progress used to live in a dict in one worker, so a poll that
+# reached another worker found no scan at all, and the dialog showed "Hashed 0
+# files" with nothing matched. Every process reads this file instead. It sits in
+# shared memory under a fireshare_ name, which gunicorn.conf.py's on_starting clears
+# with the sentinels, so a scan never outlives the server that ran it.
 _SHM_DIR = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
 _STATE_PATH = os.path.join(_SHM_DIR, "fireshare_relink_state.json")
 _STATE_LOCK_PATH = os.path.join(_SHM_DIR, "fireshare_relink_state.lock")
@@ -58,6 +60,13 @@ _DEFAULT_STATE = {
 
 # Hashing a file is quick, so progress is written at most this often (in seconds).
 _PROGRESS_INTERVAL = 0.25
+
+
+def _fireshare_command():
+    """The fireshare CLI: the one beside this Python when it is a virtualenv's (a dev
+    server run without the venv on PATH), else whichever is on PATH."""
+    beside = Path(sys.executable).with_name('fireshare')
+    return str(beside) if beside.exists() else 'fireshare'
 
 
 def _is_video_file(f):
@@ -138,7 +147,8 @@ def _set(**fields):
         _write_state(state)
 
 
-def _run_scan(app):
+def run_scan(app):
+    """The scan itself, run by `fireshare relink-scan`. Reports through the state file."""
     started = time.time()
     with app.app_context():
         try:
@@ -245,10 +255,17 @@ def relink_scan():
     with _state_lock():
         if _read_state()['is_running']:
             return jsonify({'started': False, 'message': 'A relink scan is already running.'}), 409
-        _write_state({**_DEFAULT_STATE, 'is_running': True, 'pid': os.getpid(),
+        # Started while the lock is held: the scan's first write waits for it, so it
+        # always lands on the state written here.
+        try:
+            proc = Popen([_fireshare_command(), 'relink-scan'], shell=False, start_new_session=True)
+        except OSError as e:
+            logger.error(f"Could not start the relink scan: {e}")
+            return jsonify({'started': False, 'message': 'Could not start the scan.'}), 500
+        _write_state({**_DEFAULT_STATE, 'is_running': True, 'pid': proc.pid,
                       'started_at': datetime.utcnow().isoformat()})
-    app = current_app._get_current_object()
-    threading.Thread(target=_run_scan, args=(app,), daemon=True).start()
+    # Reaped here, so a scan that dies is not left a zombie that still looks alive.
+    threading.Thread(target=proc.wait, daemon=True).start()
     return jsonify({'started': True}), 202
 
 

@@ -10,6 +10,7 @@ import SnackbarAlert from '../components/alert/SnackbarAlert'
 import NotFound from './NotFound'
 import { VideoService, GameService } from '../services'
 import { getServedBy, getUrl, getPublicWatchUrl, copyToClipboard, getVideoSources } from '../common/utils'
+import { loadUiConfig } from '../common/uiConfig'
 import VideoJSPlayer from '../components/player/VideoJSPlayer'
 import UploaderMention from '../components/user/UploaderMention'
 
@@ -58,6 +59,9 @@ const Watch = ({ authenticated }) => {
   const [passwordInput, setPasswordInput] = React.useState('')
   const [passwordError, setPasswordError] = React.useState(null)
   const [passwordLoading, setPasswordLoading] = React.useState(false)
+  // The public config, which holds the default quality. The player waits for it: on a
+  // first visit nothing is cached yet, and the starting quality is taken at mount.
+  const [uiConfig, setUiConfig] = React.useState(null)
 
   const videoPlayerRef = useRef(null)
   const lastSavedRef = useRef(0)
@@ -97,6 +101,34 @@ const Watch = ({ authenticated }) => {
     }
     if (details == null) fetch()
   }, [details, id])
+
+  React.useEffect(() => {
+    let cancelled = false
+    loadUiConfig()
+      .catch((err) => {
+        console.error(err)
+        return {}
+      })
+      .then((config) => {
+        if (!cancelled) setUiConfig(config)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Built once per video rather than on every render. Picking the other Source variant
+  // by hand is remembered, and a list rebuilt from that would reorder under the player
+  // and send it back to its starting source.
+  const sources = React.useMemo(
+    () =>
+      details && uiConfig
+        ? getVideoSources(id, details.info, details.extension || '.mp4', {
+            defaultQuality: uiConfig.default_quality,
+          })
+        : null,
+    [id, details, uiConfig],
+  )
 
   React.useEffect(() => {
     if (!selectedGame?.icon_url) {
@@ -248,20 +280,22 @@ const Watch = ({ authenticated }) => {
             style={{ flex: '1 1 auto', minHeight: 0, width: '100%', position: 'relative', backgroundColor: '#000' }}
             sx={{ '& > div': { borderRadius: 0 } }}
           >
-            <VideoJSPlayer
-              sources={getVideoSources(id, details?.info, details?.extension || '.mp4')}
-              poster={getPosterUrl()}
-              autoplay={true}
-              controls={true}
-              onTimeUpdate={handleTimeUpdate}
-              onReady={(player) => {
-                videoPlayerRef.current = player
-              }}
-              startTime={time ? parseFloat(time) : getResumeTime(id, details?.info?.duration)}
-              style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
-              fluid={false}
-              fill={true}
-            />
+            {sources && (
+              <VideoJSPlayer
+                sources={sources}
+                poster={getPosterUrl()}
+                autoplay={true}
+                controls={true}
+                onTimeUpdate={handleTimeUpdate}
+                onReady={(player) => {
+                  videoPlayerRef.current = player
+                }}
+                startTime={time ? parseFloat(time) : getResumeTime(id, details?.info?.duration)}
+                style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
+                fluid={false}
+                fill={true}
+              />
+            )}
           </Box>
         ) : (
           <Box

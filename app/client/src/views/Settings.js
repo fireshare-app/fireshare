@@ -43,6 +43,7 @@ import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import StopIcon from '@mui/icons-material/Stop'
 import { ConfigService, VideoService, GameService, ImageService, LibraryService } from '../services'
 import { setSetting, getSetting } from '../common/utils'
+import { loadUiConfig } from '../common/uiConfig'
 import LightTooltip from '../components/ui/LightTooltip'
 import GameSearch from '../components/game/GameSearch'
 import SecuritySettings from '../components/settings/SecuritySettings'
@@ -342,8 +343,15 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
       await ConfigService.updateConfig(updatedConfig)
       setUpdateable(false)
       setConfig(_.cloneDeep(updatedConfig))
-      setSetting('ui_config', updatedConfig.ui_config)
+      // The cached ui_config is the public config, which carries keys the admin config's
+      // ui_config does not (transcoding_enabled, allow_public_upload and others), so the
+      // saved values are laid over it rather than replacing it. The public config is then
+      // fetched again for the keys this save changed outside ui_config.
+      setSetting('ui_config', { ...getSetting('ui_config'), ...updatedConfig.ui_config })
       window.dispatchEvent(new Event('ui_config_updated'))
+      loadUiConfig({ refresh: true })
+        .then(() => window.dispatchEvent(new Event('ui_config_updated')))
+        .catch((err) => console.error(err))
       setAlert({ open: true, message: 'Settings Updated! Changes may take a minute to take effect.', type: 'success' })
     } catch (err) {
       console.error(err)
@@ -1219,6 +1227,31 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
                         }
                         label="Automatically transcode new videos"
                       />
+                      <FormControl fullWidth size="small">
+                        <InputLabel variant="standard" htmlFor="default-quality">
+                          Default Playback Quality
+                        </InputLabel>
+                        <NativeSelect
+                          value={updatedConfig.ui_config?.default_quality || 'source'}
+                          inputProps={{ id: 'default-quality' }}
+                          onChange={(e) =>
+                            setUpdatedConfig((prev) => ({
+                              ...prev,
+                              ui_config: { ...prev.ui_config, default_quality: e.target.value },
+                            }))
+                          }
+                        >
+                          <option value="source">Source</option>
+                          <option value="1080p">1080p</option>
+                          <option value="720p">720p</option>
+                          <option value="480p">480p</option>
+                        </NativeSelect>
+                      </FormControl>
+                      <Typography variant="caption" sx={{ color: 'text.secondary', mt: -1 }}>
+                        The quality videos start at, or the next one down when a video doesn't have it. A video whose
+                        source is no larger, or that hasn't been transcoded yet, plays its source. Viewers can still
+                        change it in the player.
+                      </Typography>
                       <FormControl fullWidth size="small">
                         <InputLabel variant="standard" htmlFor="tonemap-default">
                           HDR Tone Map

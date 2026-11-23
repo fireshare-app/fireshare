@@ -1465,6 +1465,13 @@ def bulk_import(ctx, root):
         util.clear_transcoding_status(paths['data'])
 
 @cli.command()
+def relink_scan():
+    """Hash unindexed media for the relink dialog. Started by POST /api/manual/relink/scan,
+    which has already marked the scan running; progress goes to the shared state file."""
+    from .api.relink import run_scan
+    run_scan(create_app())
+
+@cli.command()
 @click.option("--root", "-r", help="subdirectory of IMAGE_DIRECTORY to scan", required=False)
 def scan_images(root):
     """Scan IMAGE_DIRECTORY for new image files and index them."""
