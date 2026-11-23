@@ -1530,14 +1530,16 @@ def scan_images(root):
                     src = images_path / rel_path
                     webp_path = derived_path / "image.webp"
                     thumb_path = derived_path / "thumbnail.webp"
-                    if not webp_path.exists():
-                        ok = util.create_image_webp(src, webp_path)
-                        if ok:
-                            info.has_webp = True
+                    # The thumbnail first: it is what the card shows, and a very large image's
+                    # full-size WebP is slow to encode and the likeliest step to fail.
                     if not thumb_path.exists():
                         ok = util.create_image_thumbnail(src, thumb_path)
                         if ok:
                             info.has_thumbnail = True
+                    if not webp_path.exists():
+                        ok = util.create_image_webp(src, webp_path)
+                        if ok:
+                            info.has_webp = True
                     if not info.width or not info.height:
                         w, h = util.get_image_dimensions(src)
                         info.width = w
@@ -1608,14 +1610,16 @@ def scan_images(root):
             webp_path = derived_path / "image.webp"
             thumb_path = derived_path / "thumbnail.webp"
             info = ImageInfo.query.filter_by(image_id=ni.image_id).first()
-            if not webp_path.exists():
-                ok = util.create_image_webp(src, webp_path)
-                if ok and info:
-                    info.has_webp = True
+            # The thumbnail first: it is what the card shows, and a very large image's
+            # full-size WebP is slow to encode and the likeliest step to fail.
             if not thumb_path.exists():
                 ok = util.create_image_thumbnail(src, thumb_path)
                 if ok and info:
                     info.has_thumbnail = True
+            if not webp_path.exists():
+                ok = util.create_image_webp(src, webp_path)
+                if ok and info:
+                    info.has_webp = True
             if info:
                 w, h = util.get_image_dimensions(src)
                 info.width = w
@@ -1695,14 +1699,16 @@ def scan_image(ctx, path, game_id, tag_ids, title, uploaded_by, client_mtime):
                 src = images_path / rel_path
                 webp_path = derived_path / "image.webp"
                 thumb_path = derived_path / "thumbnail.webp"
-                if not webp_path.exists():
-                    ok = util.create_image_webp(src, webp_path)
-                    if ok:
-                        info.has_webp = True
+                # The thumbnail first: it is what the card shows, and a very large image's
+                # full-size WebP is slow to encode and the likeliest step to fail.
                 if not thumb_path.exists():
                     ok = util.create_image_thumbnail(src, thumb_path)
                     if ok:
                         info.has_thumbnail = True
+                if not webp_path.exists():
+                    ok = util.create_image_webp(src, webp_path)
+                    if ok:
+                        info.has_webp = True
                 if not info.width or not info.height:
                     w, h = util.get_image_dimensions(src)
                     info.width = w
@@ -1754,14 +1760,16 @@ def scan_image(ctx, path, game_id, tag_ids, title, uploaded_by, client_mtime):
             webp_path = derived_path / "image.webp"
             thumb_path = derived_path / "thumbnail.webp"
             info = ImageInfo.query.filter_by(image_id=iid).first()
-            if not webp_path.exists():
-                ok = util.create_image_webp(src, webp_path)
-                if ok and info:
-                    info.has_webp = True
+            # The thumbnail first: it is what the card shows, and a very large image's
+            # full-size WebP is slow to encode and the likeliest step to fail.
             if not thumb_path.exists():
                 ok = util.create_image_thumbnail(src, thumb_path)
                 if ok and info:
                     info.has_thumbnail = True
+            if not webp_path.exists():
+                ok = util.create_image_webp(src, webp_path)
+                if ok and info:
+                    info.has_webp = True
             w, h = util.get_image_dimensions(src)
             if info:
                 info.width = w

@@ -21,10 +21,32 @@ env:
   REGISTRY_IMAGE: shaneisrael/fireshare
 
 jobs:
+  # ── Release check ───────────────────────────────────────────────────────────
+
+  # A release published before develop is merged into main tags main's old
+  # commit, and the images would ship the previous version under the new tag.
+  check-version:
+    if: ${{ github.event_name == 'push' }}
+    name: Check tag matches app version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Compare tag with app/client/package.json
+        run: |
+          version=$(jq -r .version app/client/package.json)
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error title=Tag is on the wrong commit::$GITHUB_REF_NAME points at $(git rev-parse --short HEAD), where app/client/package.json is $version. Merge develop into main, then move the tag: git tag -f $GITHUB_REF_NAME origin/main && git push -f origin $GITHUB_REF_NAME"
+            exit 1
+          fi
+          echo "$GITHUB_REF_NAME matches app version $version"
+
   # ── Full image ──────────────────────────────────────────────────────────────
 
   build:
     if: ${{ github.event_name == 'push' }}
+    needs: check-version
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
@@ -143,6 +165,7 @@ jobs:
 
   build-lite:
     if: ${{ github.event_name == 'push' }}
+    needs: check-version
     name: Build Lite (${{ matrix.platform }})
     runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:

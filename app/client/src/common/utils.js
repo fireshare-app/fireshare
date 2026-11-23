@@ -295,8 +295,14 @@ export const getImageUrl = (imageId) => {
   if (SERVED_BY === 'nginx') {
     return `${baseUrl}/_content/derived/${imageId}/image.webp`
   }
-  return `${baseUrl}/api/image?id=${imageId}`
+  return getImageApiUrl(imageId)
 }
+
+/**
+ * The full image through the API, which serves the original when there is no WebP:
+ * one that failed to encode, or is still encoding just after an upload.
+ */
+export const getImageApiUrl = (imageId) => `${getUrl()}/api/image?id=${imageId}`
 
 // Transcodes are H.264 unless an admin has switched the encoder to AV1, and nothing
 // records which one a given transcode used, so they are described as H.264. The

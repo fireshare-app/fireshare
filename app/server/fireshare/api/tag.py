@@ -5,6 +5,7 @@ from pathlib import Path
 from flask import current_app, jsonify, request, Response
 from flask_login import login_required, current_user
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 
 from .. import db, logger, util
 from ..models import Video, VideoInfo, VideoView, VideoGameLink, VideoTagLink, CustomTag
@@ -85,7 +86,16 @@ def create_tag():
         updated_at=datetime.utcnow(),
     )
     db.session.add(tag)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        # Another request made a tag by this name after the check above, as when the
+        # same name is sent twice at once. Answer as if it had been there all along.
+        db.session.rollback()
+        existing = CustomTag.query.filter_by(name=name).first()
+        if not existing:
+            raise
+        return jsonify(existing.json()), 409
     return jsonify(tag.json()), 201
 
 
@@ -212,7 +222,16 @@ def add_tag_to_video(video_id):
         created_at=datetime.utcnow(),
     )
     db.session.add(link)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        # A request sent at the same time linked it first; that one redraws the
+        # background.
+        db.session.rollback()
+        existing = VideoTagLink.query.filter_by(video_id=video_id, tag_id=data['tag_id']).first()
+        if not existing:
+            raise
+        return jsonify(existing.json()), 200
     _regenerate_boomerang_bg(video.video_id, video.extension, current_app.config["PROCESSED_DIRECTORY"])
     return jsonify(link.json()), 201
 
