@@ -49,6 +49,8 @@ DEFAULT_CONFIG = {
   }
 }
 
+# Lower case. Compare a file's extension with .lower(): Steam's exporter and many
+# cameras name their files .MP4.
 SUPPORTED_FILE_TYPES = ['mp4', 'm4v', 'mov', 'webm']
 SUPPORTED_FILE_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.webm']
 
