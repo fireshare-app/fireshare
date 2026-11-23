@@ -31,8 +31,13 @@ export const getPublicWatchUrl = () => {
     : `${window.location.protocol}//${window.location.hostname}${portWithColon}/w/`
 }
 
+// Extensions are stored as the file has them, and cameras and Steam's exporter write .MP4
+// or .MKV, so compare them in lower case. Paths keep the stored case: that is the name on
+// disk.
+const hasExtension = (extension, ext) => extension?.toLowerCase() === ext
+
 export const getVideoPath = (id, extension) => {
-  if (extension === '.mkv') {
+  if (hasExtension(extension, '.mkv')) {
     return `${id}-1.mp4`
   }
   return `${id}${extension}`
@@ -236,7 +241,7 @@ export const getVideoUrl = (videoId, quality, extension, version) => {
     const videoPath = getVideoPath(videoId, extension)
     return withVersion(`${URL}/_content/video/${videoPath}`, version)
   }
-  return withVersion(`${URL}/api/video?id=${extension === '.mkv' ? `${videoId}&subid=1` : videoId}`, version)
+  return withVersion(`${URL}/api/video?id=${hasExtension(extension, '.mkv') ? `${videoId}&subid=1` : videoId}`, version)
 }
 
 /**
@@ -335,9 +340,9 @@ const describeMedia = (contentType, width, height, framerate, bitrate) => {
  * file the stored codec describes.
  */
 const getSourceMedia = (videoInfo, extension, { hasCrop, forceOriginal, hdrFormat }) => {
-  if (forceOriginal || extension === '.mkv' || !videoInfo?.codec) return null
+  if (forceOriginal || hasExtension(extension, '.mkv') || !videoInfo?.codec) return null
   // A crop is a stream copy into MP4, so it keeps the original's codec.
-  const container = extension === '.webm' && !hasCrop ? 'video/webm' : 'video/mp4'
+  const container = hasExtension(extension, '.webm') && !hasCrop ? 'video/webm' : 'video/mp4'
   const media = describeMedia(
     `${container}; codecs="${videoInfo.codec}"`,
     videoInfo.width,
@@ -410,17 +415,37 @@ const getTranscodeMedia = (videoInfo, height) => {
   return describeMedia(`video/mp4; codecs="${TRANSCODE_CODEC}"`, width, height, videoInfo.framerate)
 }
 
+const TRANSCODE_HEIGHTS = { '1080p': 1080, '720p': 720, '480p': 480 }
+
+/**
+ * Move `selected` to the quality an admin set videos to start at (ui_config's
+ * default_quality, which callers load with loadUiConfig): the best source no taller
+ * than it. Transcodes are only made
+ * below the source's height, so a video already that size or smaller keeps its
+ * source, and so does one with nothing that small yet (not transcoded).
+ */
+const applyDefaultQuality = (sources, sourceHeight, quality) => {
+  const target = TRANSCODE_HEIGHTS[quality]
+  if (!target || (sourceHeight && sourceHeight <= target)) return sources
+  const index = sources.findIndex((s) => TRANSCODE_HEIGHTS[s.label] <= target)
+  if (index < 0) return sources
+  return sources.map((s, i) => ({ ...s, selected: i === index }))
+}
+
 /**
  * Generates video sources array for Video.js player with quality options
- * Defaults to original quality, with 720p and 1080p as alternatives. Each source
+ * Defaults to original quality (or the admin's default quality), with 720p and 1080p as alternatives. Each source
  * carries a `media` description so the player can move the default to a transcode
  * when this device cannot play the original smoothly.
  * @param {string} videoId - The video ID
  * @param {Object} videoInfo - Video info object containing has_720p, has_1080p flags
  * @param {string} extension - Video file extension (e.g., '.mp4', '.mkv')
+ * @param {Object} [options]
+ * @param {boolean} [options.forceOriginal] - Only the uncut original selected (the editor)
+ * @param {string} [options.defaultQuality] - ui_config's default_quality
  * @returns {Array} Array of video sources for Video.js
  */
-export const getVideoSources = (videoId, videoInfo, extension, { forceOriginal = false } = {}) => {
+export const getVideoSources = (videoId, videoInfo, extension, { forceOriginal = false, defaultQuality } = {}) => {
   const sources = []
   const URL = getUrl()
   const SERVED_BY = getServedBy()
@@ -441,13 +466,16 @@ export const getVideoSources = (videoId, videoInfo, extension, { forceOriginal =
     )
 
   // forceOriginal bypasses the crop and the SDR copy — used by the editor so admins see
-  // the full uncut video. Otherwise the crop stands in for the original.
-  const originalUrl =
-    forceOriginal && SERVED_BY === 'nginx'
+  // the full uncut video. Otherwise the crop stands in for the original. Through Flask,
+  // the original's own URL is already uncut; nginx serves the crop in its place, so it
+  // has a separate path for the uncut file.
+  const originalUrl = forceOriginal
+    ? SERVED_BY === 'nginx'
       ? `${URL}/_content/video-raw/${videoId}${extension}`
-      : hasCrop
-        ? derivedUrl('cropped', 'cropped')
-        : getVideoUrl(videoId, 'original', extension, version)
+      : getVideoUrl(videoId, 'original', extension, version)
+    : hasCrop
+      ? derivedUrl('cropped', 'cropped')
+      : getVideoUrl(videoId, 'original', extension, version)
 
   if (hasSdr && !forceOriginal) {
     // A tone-mapped video has two sources: the SDR copy, and the HDR original (or its
@@ -515,7 +543,9 @@ export const getVideoSources = (videoId, videoInfo, extension, { forceOriginal =
     })
   }
 
-  return sources
+  // The editor always shows the original.
+  if (forceOriginal) return sources
+  return applyDefaultQuality(sources, videoInfo?.height, defaultQuality)
 }
 
 export const formatSize = (bytes) => {

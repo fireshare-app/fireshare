@@ -20,8 +20,8 @@ import FileManager from './views/FileManager'
 import Profile from './views/Profile'
 import SetupPassword from './views/SetupPassword'
 import darkTheme from './common/darkTheme'
-import { ConfigService } from './services'
-import { getSetting, setSetting } from './common/utils'
+import { getSetting } from './common/utils'
+import { loadUiConfig } from './common/uiConfig'
 import AuthWrapper from './components/utils/AuthWrapper'
 import LandingRoute from './components/utils/LandingRoute'
 import MainNavbar from './components/nav/MainNavbar'
@@ -31,15 +31,7 @@ const muitheme = createTheme(darkTheme)
 
 export default function App() {
   React.useEffect(() => {
-    ConfigService.getConfig()
-      .then((res) => res.data)
-      .then((config) => {
-        setSetting('ui_config', config)
-        setSetting('demo_mode', config.demo_mode || false)
-        setSetting('is_demo_user', config.is_demo_user || false)
-        setSetting('upload_limit_mb', config.upload_limit_mb || 0)
-      })
-      .catch((err) => console.error(err))
+    loadUiConfig().catch((err) => console.error(err))
   }, [])
 
   const drawerOpen = getSetting('drawerOpen') === undefined ? true : getSetting('drawerOpen')

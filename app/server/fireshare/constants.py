@@ -22,7 +22,9 @@ DEFAULT_CONFIG = {
     "show_public_videos": True,
     "show_images": True,
     "autoplay": False,
-    "show_suggestions": True
+    "show_suggestions": True,
+    # The quality the player starts on: "source", or a transcode such as "720p".
+    "default_quality": "source"
   },
   "integrations": {
     "discord_webhook_url": "",

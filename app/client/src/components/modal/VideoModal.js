@@ -36,7 +36,8 @@ import {
   getSetting,
   getPosterUrl as getVideoPosterUrl,
 } from '../../common/utils'
-import { ConfigService, VideoService, GameService, TagService } from '../../services'
+import { loadUiConfig } from '../../common/uiConfig'
+import { VideoService, GameService, TagService } from '../../services'
 import SnackbarAlert from '../alert/SnackbarAlert'
 import VideoJSPlayer from '../player/VideoJSPlayer'
 import SuggestionCard from '../cards/SuggestionCard'
@@ -84,7 +85,9 @@ const VideoModal = ({
   const [vid, setVideo] = React.useState(null)
   const [viewAdded, setViewAdded] = React.useState(false)
   const [alert, setAlert] = React.useState({ open: false, type: 'info', message: '' })
-  const [autoplay, setAutoplay] = useState(false)
+  // The public config; the player waits for it, since it holds autoplay and the
+  // default quality and both are taken when the player mounts.
+  const [uiConfig, setUiConfig] = useState(null)
   const [selectedGame, setSelectedGame] = React.useState(null)
   const [editMode, setEditMode] = React.useState(false)
   const [hasPassword, setHasPassword] = React.useState(false)
@@ -140,16 +143,33 @@ const VideoModal = ({
   }
 
   useEffect(() => {
-    const fetchConfig = async () => {
-      try {
-        const result = await ConfigService.getConfig()
-        setAutoplay(result.data?.autoplay || false)
-      } catch (error) {
+    let cancelled = false
+    loadUiConfig()
+      .catch((error) => {
         console.error('Error fetching config:', error)
-      }
+        return {}
+      })
+      .then((config) => {
+        if (!cancelled) setUiConfig(config)
+      })
+    return () => {
+      cancelled = true
     }
-    fetchConfig()
   }, [])
+
+  // Built once per video and mode rather than on every render. Picking the other
+  // Source variant by hand is remembered, and a list rebuilt from that would reorder
+  // under the player and send it back to its starting source.
+  const sources = React.useMemo(
+    () =>
+      vid && uiConfig
+        ? getVideoSources(vid.video_id, vid.info, vid.extension, {
+            forceOriginal: editMode,
+            defaultQuality: uiConfig.default_quality,
+          })
+        : null,
+    [vid, editMode, uiConfig],
+  )
 
   React.useEffect(() => {
     let cancelled = false
@@ -550,21 +570,23 @@ const VideoModal = ({
         }}
         stage={
           <>
-            <VideoJSPlayer
-              key={`${vid.video_id}-${playerVersion}`}
-              sources={getVideoSources(vid.video_id, vid?.info, vid.extension, { forceOriginal: editMode })}
-              poster={getPosterUrl()}
-              autoplay={autoplay}
-              controls={true}
-              onTimeUpdate={handleTimeUpdate}
-              onReady={(player) => {
-                playerRef.current = player
-              }}
-              startTime={getResumeTime(vid.video_id, vid.info?.duration)}
-              fill={true}
-              fluid={false}
-              playsinline={true}
-            />
+            {sources && (
+              <VideoJSPlayer
+                key={`${vid.video_id}-${playerVersion}`}
+                sources={sources}
+                poster={getPosterUrl()}
+                autoplay={uiConfig?.autoplay || false}
+                controls={true}
+                onTimeUpdate={handleTimeUpdate}
+                onReady={(player) => {
+                  playerRef.current = player
+                }}
+                startTime={getResumeTime(vid.video_id, vid.info?.duration)}
+                fill={true}
+                fluid={false}
+                playsinline={true}
+              />
+            )}
             {cropProcessing && (
               <Box
                 sx={{
