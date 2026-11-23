@@ -496,21 +496,45 @@ def create_video_crop(source_path, out_path, start_time=None, end_time=None):
     return result == 0
 
 
+def has_audio_stream(path):
+    """True when the file has an audio stream, False when it has none, None when
+    ffprobe could not tell."""
+    try:
+        cmd = ['ffprobe', '-v', 'quiet', '-select_streams', 'a', '-show_entries', 'stream=index',
+               '-of', 'csv=p=0', str(path)]
+        logger.debug(f"$ {' '.join(cmd)}")
+        return bool(sp.check_output(cmd).decode('utf-8').strip())
+    except Exception as ex:
+        logger.debug(f'Could not probe {path} for audio: {ex}')
+        return None
+
+
 def create_audio_extract(source_path, out_path):
     """
     Extract a tiny mono audio-only MP3 from source_path for waveform display.
     Low bitrate + mono keeps the file small so WaveSurfer loads/decodes quickly.
     Returns True on success, False on failure.
+
+    A video with no audio track (a screen capture, an AI render) gets silence of the
+    same length instead. ffmpeg has nothing to extract from it, and without an extract
+    the editor had no timeline to set a crop on.
     """
-    cmd = [
-        'ffmpeg', '-v', 'quiet', '-y',
-        '-i', str(source_path),
-        '-vn',           # drop video
+    encode = [
         '-ac', '1',      # mono
         '-ar', '22050',  # 22 kHz sample rate (plenty for a waveform visual)
         '-b:a', '32k',   # 32 kbps — keeps file tiny
         str(out_path),
     ]
+    if has_audio_stream(source_path) is False:
+        duration = get_video_duration(source_path)
+        if not duration:
+            logger.error(f'Failed to create audio extract {str(out_path)}: {source_path} has no audio '
+                         f'and its duration is unknown')
+            return False
+        cmd = ['ffmpeg', '-v', 'quiet', '-y', '-f', 'lavfi', '-i', 'anullsrc',
+               '-t', f'{duration:.3f}', *encode]
+    else:
+        cmd = ['ffmpeg', '-v', 'quiet', '-y', '-i', str(source_path), '-vn', *encode]
     logger.debug(f"$ {' '.join(cmd)}")
     result = sp.call(cmd)
     if result == 0:
