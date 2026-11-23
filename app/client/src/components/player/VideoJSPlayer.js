@@ -415,6 +415,13 @@ const PlayerWithSources = ({
   className,
   style,
 }) => {
+  // The start position is taken once, when the player mounts. Callers read it from the
+  // saved progress on every render, and the player rewrites that progress the moment it
+  // starts (at 0) and every few seconds after. A later value was that fresh 0, which
+  // cancelled the resume before the video had loaded, or the position playback had
+  // reached, which seeked the playing video onto itself.
+  const [initialStartTime] = useState(startTime)
+
   const [currentSourceIndex, setCurrentSourceIndex] = useState(() => {
     // Start with the "selected" source, or default to index 0
     const idx = sources?.findIndex((s) => s.selected)
@@ -467,7 +474,7 @@ const PlayerWithSources = ({
         onSourceChange={setCurrentSourceIndex}
         onTimeUpdate={onTimeUpdate}
         onReady={onReady}
-        startTime={startTime}
+        startTime={initialStartTime}
       />
       <SpacebarToggle />
       <FrameStepKeys />

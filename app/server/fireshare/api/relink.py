@@ -9,10 +9,14 @@ reports the plan, and relinks only what the administrator confirms. Nothing on
 disk is moved; only the record's path, folder and playback link change, so
 posters, transcodes, tags and views stay attached to the same id.
 """
+import fcntl
+import json
 import os
 import re
+import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -30,8 +34,18 @@ from .scan import _get_or_create_media_folder
 _CHUNK_FILE_PATTERN = re.compile(r'\.part\d{4}$')
 _TRANSCODE_PATTERN = re.compile(r'-(?:720p|1080p)\.mp4$', re.IGNORECASE)
 
-_state = {
-    'lock': threading.Lock(),
+# The scan runs in a thread of whichever gunicorn worker took the POST, and the
+# dialog polls for it through any of them. Its progress used to live in a dict in
+# that one worker, so a poll that reached another worker found no scan at all, and
+# the dialog showed "Hashed 0 files" with nothing matched. Every worker reads this
+# file instead. It sits in shared memory under a fireshare_ name, which
+# gunicorn.conf.py's on_starting clears with the sentinels, so a scan never
+# outlives the server that ran it.
+_SHM_DIR = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
+_STATE_PATH = os.path.join(_SHM_DIR, "fireshare_relink_state.json")
+_STATE_LOCK_PATH = os.path.join(_SHM_DIR, "fireshare_relink_state.lock")
+
+_DEFAULT_STATE = {
     'is_running': False,
     'current': 0,
     'total': 0,
@@ -39,7 +53,11 @@ _state = {
     'finished_at': None,
     'error': None,
     'result': None,
+    'pid': None,
 }
+
+# Hashing a file is quick, so progress is written at most this often (in seconds).
+_PROGRESS_INTERVAL = 0.25
 
 
 def _is_video_file(f):
@@ -71,14 +89,53 @@ def _title_of(record):
     return Path(record.path).stem
 
 
-def _snapshot():
-    with _state['lock']:
-        return {k: v for k, v in _state.items() if k != 'lock'}
+@contextmanager
+def _state_lock():
+    """Serialise read-modify-write of the state across workers."""
+    fd = os.open(_STATE_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # releases the lock
+
+
+def _process_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_state():
+    try:
+        with open(_STATE_PATH) as f:
+            state = {**_DEFAULT_STATE, **json.load(f)}
+    except (OSError, ValueError):
+        return dict(_DEFAULT_STATE)
+    if state['is_running'] and not _process_alive(state['pid']):
+        # The worker running the scan was recycled or died, and the thread with it.
+        state.update(is_running=False, error='The scan stopped before it finished. Run it again.')
+    return state
+
+
+def _write_state(state):
+    tmp = f"{_STATE_PATH}.{os.getpid()}.tmp"
+    with open(tmp, 'w') as f:
+        json.dump(state, f)
+    os.replace(tmp, _STATE_PATH)  # readers never see half a file
 
 
 def _set(**fields):
-    with _state['lock']:
-        _state.update(fields)
+    with _state_lock():
+        state = _read_state()
+        state.update(fields)
+        _write_state(state)
 
 
 def _run_scan(app):
@@ -107,6 +164,7 @@ def _run_scan(app):
             matches, unmatched, found = [], [], {}
             folders = set()
             hashed = 0
+            current, reported_at = 0, 0.0
             for kind, missing_by_id, candidates, hasher in jobs:
                 for rel, f in candidates:
                     folders.add(os.path.dirname(rel))
@@ -116,7 +174,10 @@ def _run_scan(app):
                     except OSError as e:
                         logger.warning(f"Relink: could not hash {f}: {e}")
                         media_id = None
-                    _set(current=_state['current'] + 1)
+                    current += 1
+                    if time.monotonic() - reported_at >= _PROGRESS_INTERVAL:
+                        reported_at = time.monotonic()
+                        _set(current=current)
                     record = missing_by_id.get(media_id) if media_id else None
                     if record is None:
                         continue
@@ -146,7 +207,7 @@ def _run_scan(app):
                             'old_path': record.path,
                         })
 
-            _set(result={
+            _set(current=current, result={
                 'matches': matches,
                 'unmatched': unmatched,
                 'hashed': hashed,
@@ -167,7 +228,8 @@ def _run_scan(app):
 @require_perm(P.MANAGE_LIBRARY)
 def relink_status():
     """Progress of the current or last scan, plus how much is missing right now."""
-    snapshot = _snapshot()
+    snapshot = _read_state()
+    snapshot.pop('pid', None)
     snapshot['missing'] = {
         'videos': Video.query.filter_by(available=False).count(),
         'images': Image.query.filter_by(available=False).count(),
@@ -180,11 +242,11 @@ def relink_status():
 @demo_restrict
 def relink_scan():
     """Start hashing in the background. Poll /api/manual/relink/status for the plan."""
-    with _state['lock']:
-        if _state['is_running']:
+    with _state_lock():
+        if _read_state()['is_running']:
             return jsonify({'started': False, 'message': 'A relink scan is already running.'}), 409
-        _state.update(is_running=True, current=0, total=0, error=None, result=None,
-                      started_at=datetime.utcnow().isoformat(), finished_at=None)
+        _write_state({**_DEFAULT_STATE, 'is_running': True, 'pid': os.getpid(),
+                      'started_at': datetime.utcnow().isoformat()})
     app = current_app._get_current_object()
     threading.Thread(target=_run_scan, args=(app,), daemon=True).start()
     return jsonify({'started': True}), 202

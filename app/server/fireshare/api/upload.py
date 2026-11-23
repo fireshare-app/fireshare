@@ -168,7 +168,7 @@ def public_upload_video():
     if not filename:
         return Response(status=400)
     filetype = filename.split('.')[-1]
-    if not filetype in SUPPORTED_FILE_TYPES:
+    if filetype.lower() not in SUPPORTED_FILE_TYPES:
         return Response(status=400)
     file.seek(0, 2)
     size_err = _check_upload_size(file.tell())
@@ -226,7 +226,7 @@ def public_upload_videoChunked():
     if not filename:
         return Response(status=400)
     filetype = filename.split('.')[-1]  # TODO, probe filetype with fmpeg instead and remux to supporrted
-    if not filetype in SUPPORTED_FILE_TYPES:
+    if filetype.lower() not in SUPPORTED_FILE_TYPES:
         return Response(status=400)
     size_err = _check_upload_size(fileSize)
     if size_err:
@@ -377,7 +377,7 @@ def upload_video():
     if not filename:
         return Response(status=400)
     filetype = filename.split('.')[-1]
-    if not filetype in SUPPORTED_FILE_TYPES:
+    if filetype.lower() not in SUPPORTED_FILE_TYPES:
         return Response(status=400)
     file.seek(0, 2)
     size_err = _check_upload_size(file.tell())
@@ -437,7 +437,7 @@ def upload_videoChunked():
         return Response(status=400)
 
     filetype = fileName.split('.')[-1]
-    if not filetype in SUPPORTED_FILE_TYPES:
+    if filetype.lower() not in SUPPORTED_FILE_TYPES:
         return Response(status=400)
 
     size_err = _check_upload_size(fileSize)
