@@ -26,7 +26,7 @@ from .helpers import (
     resolve_media_subfolder,
 )
 from .transcoding import _is_pid_running
-from .scan import _game_scan_state
+from .scan import game_scan_progress
 from .decorators import admin_required, demo_restrict
 
 
@@ -136,13 +136,7 @@ def admin_event_stream():
                         event_queue.put(f"event: transcoding\ndata: {json.dumps(transcoding_state)}\n\n")
                         last_transcoding_state = transcoding_state.copy()
 
-                    with _game_scan_state['lock']:
-                        game_scan_state = {
-                            "is_running": _game_scan_state['is_running'],
-                            "current": _game_scan_state['current'],
-                            "total": _game_scan_state['total'],
-                            "suggestions_created": _game_scan_state['suggestions_created'],
-                        }
+                    game_scan_state = game_scan_progress()
 
                     if game_scan_state != last_game_scan_state:
                         event_queue.put(f"event: gameScan\ndata: {json.dumps(game_scan_state)}\n\n")

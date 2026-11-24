@@ -1,7 +1,11 @@
+import fcntl
+import json
 import os
+import tempfile
 import threading
 import time
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from subprocess import Popen
@@ -22,14 +26,82 @@ from .decorators import demo_restrict, require_perm
 _folder_size_cache = {'result': None, 'expires_at': 0}
 _FOLDER_SIZE_TTL = 60  # seconds
 
-# Global state for tracking game scan progress
-_game_scan_state = {
+# The game scan runs in a thread of whichever gunicorn worker took the start
+# request, but the status poll and the admin SSE stream can reach any worker. Its
+# progress used to live in a dict in that one worker, so the others reported no
+# scan (or the last one they ran) and could start a second scan alongside it.
+# Every worker reads this file instead. It sits in shared memory under a
+# fireshare_ name, which gunicorn.conf.py's on_starting clears with the
+# sentinels, so a scan never outlives the server that ran it.
+_SHM_DIR = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
+_GAME_SCAN_STATE_PATH = os.path.join(_SHM_DIR, "fireshare_game_scan_state.json")
+_GAME_SCAN_LOCK_PATH = os.path.join(_SHM_DIR, "fireshare_game_scan_state.lock")
+
+_GAME_SCAN_DEFAULT_STATE = {
     'is_running': False,
     'current': 0,
     'total': 0,
     'suggestions_created': 0,
-    'lock': threading.Lock()
+    'pid': None,
 }
+
+# Matching a filename is quick, so progress is written at most this often (in seconds).
+_GAME_SCAN_PROGRESS_INTERVAL = 0.25
+
+
+@contextmanager
+def _game_scan_lock():
+    """Serialise read-modify-write of the game scan state across workers."""
+    fd = os.open(_GAME_SCAN_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # releases the lock
+
+
+def _process_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_game_scan_state():
+    try:
+        with open(_GAME_SCAN_STATE_PATH) as f:
+            state = {**_GAME_SCAN_DEFAULT_STATE, **json.load(f)}
+    except (OSError, ValueError):
+        return dict(_GAME_SCAN_DEFAULT_STATE)
+    if state['is_running'] and not _process_alive(state['pid']):
+        # The worker running the scan was recycled or died, and the thread with it.
+        state['is_running'] = False
+    return state
+
+
+def _write_game_scan_state(state):
+    tmp = f"{_GAME_SCAN_STATE_PATH}.{os.getpid()}.tmp"
+    with open(tmp, 'w') as f:
+        json.dump(state, f)
+    os.replace(tmp, _GAME_SCAN_STATE_PATH)  # readers never see half a file
+
+
+def _update_game_scan_state(**fields):
+    with _game_scan_lock():
+        state = _read_game_scan_state()
+        state.update(fields)
+        _write_game_scan_state(state)
+
+
+def game_scan_progress():
+    """Progress of the current or last game scan, the same from every worker."""
+    state = _read_game_scan_state()
+    return {k: state[k] for k in ('is_running', 'current', 'total', 'suggestions_created')}
 
 
 def get_folder_size(*folder_paths):
@@ -247,12 +319,7 @@ def manual_scan_folders():
 @login_required
 def get_game_scan_status():
     """Return current game scan progress"""
-    return jsonify({
-        'is_running': _game_scan_state['is_running'],
-        'current': _game_scan_state['current'],
-        'total': _game_scan_state['total'],
-        'suggestions_created': _game_scan_state['suggestions_created']
-    })
+    return jsonify(game_scan_progress())
 
 
 @api.route('/api/folder-suggestions')
@@ -585,19 +652,25 @@ def manual_scan_games():
     """Start game scan in background thread"""
     from fireshare.cli import save_game_suggestions_batch, _load_suggestions
 
-    # Check if already running
-    with _game_scan_state['lock']:
-        if _game_scan_state['is_running']:
+    # Check if already running, in any worker
+    with _game_scan_lock():
+        if _read_game_scan_state()['is_running']:
             return jsonify({'already_running': True}), 409
-        _game_scan_state['is_running'] = True
-        _game_scan_state['current'] = 0
-        _game_scan_state['total'] = 0
-        _game_scan_state['suggestions_created'] = 0
+        _write_game_scan_state({**_GAME_SCAN_DEFAULT_STATE, 'is_running': True, 'pid': os.getpid()})
 
     # Get app context for background thread
     app = current_app._get_current_object()
 
     def run_scan():
+        progress = {'current': 0, 'total': 0, 'suggestions_created': 0}
+        reported_at = 0.0
+
+        def report(force=False):
+            nonlocal reported_at
+            if force or time.monotonic() - reported_at >= _GAME_SCAN_PROGRESS_INTERVAL:
+                reported_at = time.monotonic()
+                _update_game_scan_state(**progress)
+
         with app.app_context():
             try:
                 steamgriddb_api_key = get_steamgriddb_api_key()
@@ -626,7 +699,8 @@ def manual_scan_games():
                 logger.info(f"Videos needing individual suggestions: {len(videos_needing_suggestions)}")
 
                 # Set total for progress tracking
-                _game_scan_state['total'] = len(unlinked_videos)
+                progress['total'] = len(unlinked_videos)
+                report(force=True)
 
                 # If nothing unlinked, we're done
                 if not unlinked_videos:
@@ -687,7 +761,8 @@ def manual_scan_games():
                             }
                             processed_video_ids.update(video_ids)
                             suggestions_created += 1
-                            _game_scan_state['suggestions_created'] = suggestions_created
+                            progress['suggestions_created'] = suggestions_created
+                            report()
                             logger.info(f"Created folder suggestion: {folder} -> {detected_game['game_name']} ({len(video_ids)} videos)")
                         elif detected_game:
                             logger.info(f"Skipping folder '{folder}' - confidence {detected_game['confidence']:.2f} below threshold 0.65")
@@ -701,7 +776,8 @@ def manual_scan_games():
                 # Process remaining individual videos (not in folder suggestions and no existing suggestion)
                 pending_suggestions = {}
                 for i, video in enumerate(videos_needing_suggestions):
-                    _game_scan_state['current'] = i + 1
+                    progress['current'] = i + 1
+                    report()
 
                     if video.video_id in processed_video_ids:
                         continue
@@ -712,7 +788,7 @@ def manual_scan_games():
                     if detected_game and detected_game['confidence'] >= 0.65:
                         pending_suggestions[video.video_id] = detected_game
                         suggestions_created += 1
-                        _game_scan_state['suggestions_created'] = suggestions_created
+                        progress['suggestions_created'] = suggestions_created
                         logger.info(f"Queued game suggestion for video {video.video_id}: {detected_game['game_name']} (confidence: {detected_game['confidence']:.2f}, source: {detected_game['source']})")
 
                 # Batch save all suggestions at once
@@ -725,9 +801,10 @@ def manual_scan_games():
             except Exception as e:
                 logger.error(f"Error scanning videos for games: {e}")
             finally:
+                report(force=True)
                 # Brief delay so frontend can display the completed status before hiding
                 time.sleep(2)
-                _game_scan_state['is_running'] = False
+                _update_game_scan_state(is_running=False)
 
     thread = threading.Thread(target=run_scan)
     thread.daemon = True
