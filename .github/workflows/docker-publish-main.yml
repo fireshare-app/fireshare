@@ -353,6 +353,12 @@ jobs:
     needs:
       - manual_build
     steps:
+      # Release builds tag images 1.9.4, not v1.9.4, so drop a typed "v".
+      - name: Resolve image tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: echo "TAG=${INPUT_TAG#v}" >> "$GITHUB_ENV"
+
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
@@ -380,13 +386,13 @@ jobs:
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
-            -t ${{ env.REGISTRY_IMAGE }}:${{ github.event.inputs.tag }} \
+            -t ${{ env.REGISTRY_IMAGE }}:$TAG \
             -t ${{ env.REGISTRY_IMAGE }}:latest \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ github.event.inputs.tag }}
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:$TAG
 
   manual_build_lite:
     if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -455,6 +461,12 @@ jobs:
     needs:
       - manual_build_lite
     steps:
+      # Release builds tag images 1.9.4-lite, not v1.9.4-lite, so drop a typed "v".
+      - name: Resolve image tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: echo "TAG=${INPUT_TAG#v}" >> "$GITHUB_ENV"
+
       - name: Download digests
         uses: actions/download-artifact@v4
         with:
@@ -482,10 +494,10 @@ jobs:
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
-            -t ${{ env.REGISTRY_IMAGE }}:${{ github.event.inputs.tag }}-lite \
+            -t ${{ env.REGISTRY_IMAGE }}:$TAG-lite \
             -t ${{ env.REGISTRY_IMAGE }}:latest-lite \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ github.event.inputs.tag }}-lite
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:$TAG-lite

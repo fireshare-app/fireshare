@@ -21,6 +21,20 @@ const numInputSx = {
 
 const TIMELINE_HEIGHT = 20 // px
 
+// A video with no audio track gets silence from the server, so the crop still has a
+// timeline to sit on. Said in words, because a flat line looks like a waveform that
+// failed to draw.
+const isSilent = (buffer) => {
+  if (!buffer) return false
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const data = buffer.getChannelData(c)
+    for (let i = 0; i < data.length; i++) {
+      if (Math.abs(data[i]) > 0.001) return false
+    }
+  }
+  return true
+}
+
 /**
  * WaveformCropper — renders an audio waveform for the original (unmodified) video
  * with a draggable/resizable region marking the crop start and end points.
@@ -77,6 +91,7 @@ const WaveformCropper = React.forwardRef(
 
     const [isLoading, setIsLoading] = useState(true)
     const [loadError, setLoadError] = useState(false)
+    const [silent, setSilent] = useState(false)
     const [localStart, setLocalStart] = useState(startTime ?? 0)
     const [localEnd, setLocalEnd] = useState(endTime ?? duration ?? 0)
     const [totalDuration, setTotalDuration] = useState(duration ?? 0)
@@ -202,6 +217,7 @@ const WaveformCropper = React.forwardRef(
         const total = ws.getDuration()
         setTotalDuration(total)
         setIsLoading(false)
+        setSilent(isSilent(ws.getDecodedData()))
 
         const s = startTime ?? 0
         const e = endTime ?? total
@@ -437,6 +453,21 @@ const WaveformCropper = React.forwardRef(
                       <Typography sx={{ fontSize: 12, color: '#FFFFFF66' }}>Loading audio…</Typography>
                     </>
                   )}
+                </Box>
+              )}
+              {silent && !isLoading && !loadError && (
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    pb: `${TIMELINE_HEIGHT}px`,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <Typography sx={{ fontSize: 12, color: '#FFFFFF66' }}>No audio track</Typography>
                 </Box>
               )}
             </Box>

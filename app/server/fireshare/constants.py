@@ -22,7 +22,9 @@ DEFAULT_CONFIG = {
     "show_public_videos": True,
     "show_images": True,
     "autoplay": False,
-    "show_suggestions": True
+    "show_suggestions": True,
+    # The quality the player starts on: "source", or a transcode such as "720p".
+    "default_quality": "source"
   },
   "integrations": {
     "discord_webhook_url": "",
@@ -49,6 +51,8 @@ DEFAULT_CONFIG = {
   }
 }
 
+# Lower case. Compare a file's extension with .lower(): Steam's exporter and many
+# cameras name their files .MP4.
 SUPPORTED_FILE_TYPES = ['mp4', 'm4v', 'mov', 'webm']
 SUPPORTED_FILE_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.webm']
 

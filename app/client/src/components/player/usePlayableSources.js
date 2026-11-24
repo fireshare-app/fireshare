@@ -12,9 +12,11 @@ const decodingInfo = (media) =>
   ])
 
 /**
- * The index of the source to start on: the best quality this device can decode in
- * hardware, else the best it can decode smoothly at all, else the one already
- * selected.
+ * The index of the source to start on: the best quality, no higher than the one
+ * already selected, that this device can decode in hardware, else the best of those
+ * it can decode smoothly at all, else the one already selected. The selected one is
+ * the source unless an admin set a lower default quality, which this never goes
+ * above.
  *
  * The source can be something a transcode never is, such as 3440x1440 AV1 at 60 fps.
  * A browser without an AV1 decoder in hardware falls back to software, which cannot
@@ -27,7 +29,9 @@ const decodingInfo = (media) =>
  */
 const pickStartingIndex = async (sources) => {
   const selected = Math.max(0, sources.findIndex((s) => s.selected))
-  const results = await Promise.allSettled(sources.map((s) => (s.media ? decodingInfo(s.media) : Promise.reject())))
+  const results = await Promise.allSettled(
+    sources.map((s, i) => (i >= selected && s.media ? decodingInfo(s.media) : Promise.reject())),
+  )
   const info = results.map((r) => (r.status === 'fulfilled' ? r.value : null))
 
   const hardware = info.findIndex((r) => r?.supported && r.smooth && r.powerEfficient)

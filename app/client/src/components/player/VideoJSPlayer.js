@@ -403,6 +403,8 @@ function FrameStepKeys() {
   return null
 }
 
+const selectedIndex = (sources) => Math.max(0, sources?.findIndex((s) => s.selected) ?? 0)
+
 const PlayerWithSources = ({
   sources,
   poster,
@@ -415,25 +417,34 @@ const PlayerWithSources = ({
   className,
   style,
 }) => {
-  const [currentSourceIndex, setCurrentSourceIndex] = useState(() => {
-    // Start with the "selected" source, or default to index 0
-    const idx = sources?.findIndex((s) => s.selected)
-    return idx >= 0 ? idx : 0
-  })
+  // The start position is taken once, when the player mounts. Callers read it from the
+  // saved progress on every render, and the player rewrites that progress the moment it
+  // starts (at 0) and every few seconds after. A later value was that fresh 0, which
+  // cancelled the resume before the video had loaded, or the position playback had
+  // reached, which seeked the playing video onto itself.
+  const [initialStartTime] = useState(startTime)
+
+  // Start with the "selected" source, or default to index 0
+  const [currentSourceIndex, setCurrentSourceIndex] = useState(() => selectedIndex(sources))
 
   // Reset source index when the sources actually change (e.g. new video).
   // Compare by src URLs rather than array reference to avoid resetting the
   // user's quality selection when the parent re-renders with a new array
-  // that contains the same sources.
+  // that contains the same sources. The same URLs with another one selected
+  // count as a change too: the editor lists the viewer's sources with the
+  // original selected, and through Flask those are the very same URLs.
   const prevSourcesRef = useRef(sources)
   useEffect(() => {
-    const prevSrcs = prevSourcesRef.current?.map((s) => s.src)
+    const prev = prevSourcesRef.current
+    const prevSrcs = prev?.map((s) => s.src)
     const nextSrcs = sources?.map((s) => s.src)
-    const changed = prevSrcs?.length !== nextSrcs?.length || prevSrcs?.some((s, i) => s !== nextSrcs[i])
+    const changed =
+      prevSrcs?.length !== nextSrcs?.length ||
+      prevSrcs?.some((s, i) => s !== nextSrcs[i]) ||
+      selectedIndex(prev) !== selectedIndex(sources)
     if (changed) {
       prevSourcesRef.current = sources
-      const idx = sources?.findIndex((s) => s.selected)
-      setCurrentSourceIndex(idx >= 0 ? idx : 0)
+      setCurrentSourceIndex(selectedIndex(sources))
     }
   }, [sources])
 
@@ -467,7 +478,7 @@ const PlayerWithSources = ({
         onSourceChange={setCurrentSourceIndex}
         onTimeUpdate={onTimeUpdate}
         onReady={onReady}
-        startTime={startTime}
+        startTime={initialStartTime}
       />
       <SpacebarToggle />
       <FrameStepKeys />
