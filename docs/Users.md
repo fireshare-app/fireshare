@@ -144,6 +144,10 @@ The same rules hold wherever media is deleted or changed in bulk:
   video against `delete_own` / `delete_any`. If any of them is not yours to
   delete, nothing is deleted. You can still delete the tag or game and keep its
   videos.
+- Changing or removing the game on a video takes `manage_games` or edit rights
+  on that video. **Allow Public Game Tagging** lets everyone else, signed in or
+  not, give a game to a video that has none yet, but never change or remove one
+  that is already set.
 
 **Deleting a user never deletes their media.** The uploader link is cleared and
 the content stays in the library as unowned.

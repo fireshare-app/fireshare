@@ -298,28 +298,56 @@ def get_steamgriddb_api_key():
     return os.environ.get('STEAMGRIDDB_API_KEY', '')
 
 
+def public_game_tagging_enabled():
+    """Whether "Allow Public Game Tagging" is on in config.json."""
+    config_path = current_app.config['PATHS']['data'] / 'config.json'
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path, 'r') as configfile:
+            config = json.load(configfile)
+    except (OSError, ValueError):
+        return False
+    return bool(config.get('app_config', {}).get('allow_public_game_tag', False))
+
+
 def login_required_unless_public_game_tag(func):
     """
     Decorator that requires login unless public game tagging is enabled in config.
+
+    It only decides who may reach the route. What the caller may then change is
+    up to video_game_link_access.
     """
     from flask_login import current_user
 
     @wraps(func)
     def decorated_view(*args, **kwargs):
-        paths = current_app.config['PATHS']
-        config_path = paths['data'] / 'config.json'
-        allow_public = False
-        if config_path.exists():
-            try:
-                with open(config_path, 'r') as configfile:
-                    config = json.load(configfile)
-                    allow_public = config.get('app_config', {}).get('allow_public_game_tag', False)
-            except:
-                pass
-        if not current_user.is_authenticated and not allow_public:
+        if not current_user.is_authenticated and not public_game_tagging_enabled():
             return current_app.login_manager.unauthorized()
         return func(*args, **kwargs)
     return decorated_view
+
+
+def video_game_link_access(video):
+    """How far the current visitor may change which game a video is linked to.
+
+    'full'   - link, relink or unlink: manage_games, or edit rights on the video.
+    'public' - only give a game to a video that has none yet. This is all that
+               "Allow Public Game Tagging" grants to everyone else, signed in or
+               not, so a visitor can fill in a missing game but cannot overwrite
+               or remove the one its owner chose.
+    None     - nothing.
+    """
+    from flask_login import current_user
+    from .. import permissions as P
+
+    if current_user.is_authenticated and (
+        current_user.can(P.MANAGE_GAMES) or current_user.can_modify(video, 'edit')
+    ):
+        return 'full'
+    if public_game_tagging_enabled():
+        return 'public'
+    return None
 
 
 def get_video_path(id, subid=None, quality=None):
