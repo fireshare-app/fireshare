@@ -34,6 +34,39 @@ def _check_upload_size(file_size_bytes):
     return None
 
 
+# A cap on totalChunks. Every chunk is one request and one file on disk, and the
+# completeness check stats every part up to totalChunks, so an unbounded value
+# lets a single request hold a worker thread for hours. 20000 chunks is still
+# 1.8 TB at the browser's 90 MB chunk size.
+MAX_CHUNKS = 20000
+
+
+def _positive_int(value, maximum=None):
+    """A positive int from form input, or None when it is missing, malformed, or out of range."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 1 or (maximum is not None and parsed > maximum):
+        return None
+    return parsed
+
+
+def _parse_chunk_numbers():
+    """(chunkPart, totalChunks, None) from the request form, or (None, None, a 400 Response).
+
+    Every chunked upload route goes through this, so none of them loops over a
+    client's totalChunks without the cap.
+    """
+    total_chunks = _positive_int(request.form.get('totalChunks'), MAX_CHUNKS)
+    if not total_chunks:
+        return None, None, Response(status=400, response=f'totalChunks must be between 1 and {MAX_CHUNKS}.')
+    chunk_part = _positive_int(request.form.get('chunkPart'), total_chunks)
+    if not chunk_part:
+        return None, None, Response(status=400, response='chunkPart must be between 1 and totalChunks.')
+    return chunk_part, total_chunks, None
+
+
 def _parse_upload_metadata():
     """Return (tag_ids, game_id, title) parsed from current request form data."""
     tag_ids_raw = request.form.get('tag_ids', '')
@@ -214,8 +247,9 @@ def public_upload_videoChunked():
     if not all(key in request.files for key in required_files) or not all(key in request.form for key in required_form_fields):
         return Response(status=400)
     blob = request.files.get('blob')
-    chunkPart = int(request.form.get('chunkPart'))
-    totalChunks = int(request.form.get('totalChunks'))
+    chunkPart, totalChunks, chunk_error = _parse_chunk_numbers()
+    if chunk_error:
+        return chunk_error
     checkSum = re.sub(r'[^a-zA-Z0-9_-]', '', request.form.get('checkSum'))
     fileSize = int(request.form.get('fileSize'))
     if not checkSum:
@@ -424,8 +458,9 @@ def upload_videoChunked():
         return Response(status=400)
 
     blob = request.files.get('blob')
-    chunkPart = int(request.form.get('chunkPart'))
-    totalChunks = int(request.form.get('totalChunks'))
+    chunkPart, totalChunks, chunk_error = _parse_chunk_numbers()
+    if chunk_error:
+        return chunk_error
     checkSum = re.sub(r'[^a-zA-Z0-9_-]', '', request.form.get('checkSum'))
     fileName = secure_filename(request.form.get('fileName'))
     fileSize = int(request.form.get('fileSize'))

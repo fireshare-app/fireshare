@@ -49,7 +49,8 @@ from . import api
 from .decorators import json_body, require_perm
 from .helpers import parse_client_mtime, sanitize_upload_folder, secure_filename
 from .image import SUPPORTED_IMAGE_TYPES, _launch_scan_image
-from .upload import _check_upload_size, _launch_scan_video, _parse_upload_metadata, _reject_duplicate
+from .upload import (_check_upload_size, _launch_scan_video, _parse_chunk_numbers, _parse_upload_metadata,
+                     _positive_int, _reject_duplicate)
 
 # Identifies a Fireshare upload token on sight, the way `ghp_` does for GitHub.
 # Secret scanners and log filters can key on it, and a user who pastes the wrong
@@ -354,11 +355,6 @@ def delete_upload_token(token_id):
 # they file it, or how they attribute it.
 # ---------------------------------------------------------------------------
 
-# A cap on totalChunks. Every chunk is one request and one file on disk, so an
-# absurd value is a way to make the server create a great many of both.
-MAX_CHUNKS = 20000
-
-
 def _resolve_game_id(game_id):
     """The game to link the upload to, from `game_id` or a `game` name.
 
@@ -528,22 +524,6 @@ def token_upload(token_user):
     return _finish_upload(plan, save_path, token_user)
 
 
-def _positive_int(value, maximum=None):
-    """A positive int from form input, or None.
-
-    The browser-facing chunked routes call int() straight on the form value,
-    which turns a malformed request into a 500. A token route is driven by
-    somebody else's code, so bad input is expected and answered with a 400.
-    """
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed < 1 or (maximum is not None and parsed > maximum):
-        return None
-    return parsed
-
-
 @api.route('/api/upload/token/chunked', methods=['POST'])
 @upload_token_required
 def token_upload_chunked(token_user):
@@ -567,12 +547,9 @@ def token_upload_chunked(token_user):
         return Response(status=400, response='A "blob" part is required.')
     blob = request.files['blob']
 
-    total_chunks = _positive_int(request.form.get('totalChunks'), MAX_CHUNKS)
-    if not total_chunks:
-        return Response(status=400, response=f'totalChunks must be between 1 and {MAX_CHUNKS}.')
-    chunk_part = _positive_int(request.form.get('chunkPart'), total_chunks)
-    if not chunk_part:
-        return Response(status=400, response='chunkPart must be between 1 and totalChunks.')
+    chunk_part, total_chunks, chunk_error = _parse_chunk_numbers()
+    if chunk_error:
+        return chunk_error
     file_size = _positive_int(request.form.get('fileSize'))
     if file_size is None:
         return Response(status=400, response='fileSize must be a positive integer.')
