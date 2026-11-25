@@ -19,6 +19,8 @@ from .helpers import (
     delete_video_files,
     get_steamgriddb_api_key,
     login_required_unless_public_game_tag,
+    refuse_unless_can_delete_all,
+    video_game_link_access,
     viewer_sees_private,
 )
 
@@ -246,7 +248,10 @@ def get_games():
 
 
 @api.route('/api/games', methods=["POST"])
-@login_required_unless_public_game_tag
+# Adding a game fetches its artwork from SteamGridDB, which only signed-in
+# accounts can search. Anyone who can put a game on media may add one: an
+# uploader picks it at upload time, an editor when changing a video's details.
+@require_perm(P.MANAGE_GAMES, P.UPLOAD, P.EDIT_OWN, P.EDIT_ANY)
 def create_game():
     data = request.json
 
@@ -258,16 +263,9 @@ def create_game():
 
     existing_game = GameMetadata.query.filter_by(steamgriddb_id=data['steamgriddb_id']).first()
     if existing_game:
-        updated = False
-        if data.get('name') and data['name'] != existing_game.name:
-            existing_game.name = data['name']
-            updated = True
-        if data.get('release_date') and data.get('release_date') != existing_game.release_date:
-            existing_game.release_date = data['release_date']
-            updated = True
-        if updated:
-            existing_game.updated_at = datetime.utcnow()
-            db.session.commit()
+        # Return the game as it is. This route used to copy the caller's name and
+        # release date onto it, which let anyone who could reach it rename any game
+        # in the library.
         return jsonify(existing_game.json()), 200
 
     if is_custom_game_id(data['steamgriddb_id']):
@@ -334,11 +332,22 @@ def link_video_to_game(video_id):
     if not video:
         return Response(status=404, response='Video not found.')
 
+    access = video_game_link_access(video)
+    if access is None:
+        return Response(status=403, response='You can only change the game on your own videos.')
+
     game = db.session.get(GameMetadata, data['game_id'])
     if not game:
         return Response(status=404, response='Game not found.')
 
     existing_link = VideoGameLink.query.filter_by(video_id=video_id).first()
+    if existing_link and existing_link.game_id == game.id:
+        return jsonify({"video_id": video_id, "game_id": game.id}), 200
+    if existing_link and access != 'full':
+        return Response(
+            status=403,
+            response='This video already has a game. Only its owner or someone who manages games can change it.',
+        )
     if existing_link:
         existing_link.game_id = data['game_id']
         existing_link.created_at = datetime.utcnow()
@@ -378,6 +387,12 @@ def get_video_game(video_id):
 @api.route('/api/videos/<video_id>/game', methods=["DELETE"])
 @login_required_unless_public_game_tag
 def unlink_video_from_game(video_id):
+    video = Video.query.filter_by(video_id=video_id).first()
+    if not video:
+        return Response(status=404, response='Video not found.')
+    if video_game_link_access(video) != 'full':
+        return Response(status=403, response='You can only change the game on your own videos.')
+
     link = VideoGameLink.query.filter_by(video_id=video_id).first()
     if not link:
         return Response(status=404, response='Video is not linked to any game.')
@@ -542,6 +557,11 @@ def delete_game(steamgriddb_id):
     video_links = VideoGameLink.query.filter_by(game_id=game.id).all()
 
     if delete_videos and video_links:
+        refusal = refuse_unless_can_delete_all(
+            [link.video for link in video_links if link.video is not None], 'game'
+        )
+        if refusal:
+            return refusal
         # Delete all associated videos
         paths = current_app.config['PATHS']
         from ..models import VideoInfo, VideoView, VideoTagLink, MediaFolder
@@ -626,6 +646,10 @@ def get_video_game_suggestion(video_id):
 def reject_game_suggestion(video_id):
     """User rejected the game suggestion - remove from storage"""
     from fireshare.cli import delete_game_suggestion
+
+    video = Video.query.filter_by(video_id=video_id).first()
+    if video and video_game_link_access(video) is None:
+        return Response(status=403, response='You can only change the game on your own videos.')
 
     if delete_game_suggestion(video_id):
         logger.info(f"User rejected game suggestion for video {video_id}")
