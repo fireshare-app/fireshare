@@ -7,7 +7,7 @@ import time
 from functools import wraps
 from pathlib import Path
 from datetime import datetime
-from flask import current_app
+from flask import current_app, Response
 from .. import db, logger
 from ..models import TranscodeJob, Video, MediaFolder, ImageFolderRule, ImageGameLink
 
@@ -233,6 +233,34 @@ def cancel_pending_transcode_jobs(video_id):
     ).delete(synchronize_session=False)
     if removed:
         logger.info(f"Clearing {removed} queued transcode job(s) for deleted video {video_id}")
+
+
+def refuse_unless_can_delete_all(videos, owner_label):
+    """A 403 if the current user may not delete every one of these videos, else None.
+
+    Deleting a tag or game together with its videos deletes each video, so it is
+    held to the same per-video rule as DELETE /api/video/delete/<id>:
+    manage_tags and manage_games let a user put anyone's clips under a tag or
+    game, and must not double as a way to delete them. Callers check before
+    removing anything, so a refusal leaves the library as it was.
+    """
+    from flask_login import current_user
+
+    blocked = [v for v in videos if not current_user.can_modify(v, 'delete')]
+    if not blocked:
+        return None
+    logger.warning(
+        f"Refused to delete {owner_label} with its videos for user {current_user.id}: "
+        f"{len(blocked)} of {len(videos)} video(s) are not theirs to delete"
+    )
+    noun = 'video' if len(blocked) == 1 else 'videos'
+    return Response(
+        status=403,
+        response=(
+            f"{len(blocked)} {noun} in this {owner_label} can't be deleted by you. "
+            f"Nothing was deleted. You can delete the {owner_label} and keep its videos."
+        ),
+    )
 
 
 def add_cache_headers(response, cache_key, max_age=604800):

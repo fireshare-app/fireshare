@@ -28,6 +28,7 @@ import LocalOfferIcon from '@mui/icons-material/LocalOffer'
 import { useNavigate } from 'react-router-dom'
 import { SketchPicker } from 'react-color'
 import { TagService } from '../services'
+import SnackbarAlert from '../components/alert/SnackbarAlert'
 import { getPosterUrl } from '../common/utils'
 import LoadingSpinner from '../components/ui/LoadingSpinner'
 import { labelSx, inputSx, dialogPaperSx, dialogTitleSx } from '../common/modalStyles'
@@ -89,6 +90,7 @@ const Tags = ({ authenticated, searchText }) => {
   const [colorPickerAnchorEl, setColorPickerAnchorEl] = React.useState(null)
   const [editingTag, setEditingTag] = React.useState(null)
   const [toolbarTarget, setToolbarTarget] = React.useState(null)
+  const [alert, setAlert] = React.useState({ open: false })
   const navigate = useNavigate()
   const theme = useTheme()
   const isMdDown = useMediaQuery(theme.breakpoints.down('md'))
@@ -151,16 +153,23 @@ const Tags = ({ authenticated, searchText }) => {
   }
 
   const handleDeleteConfirm = async () => {
-    try {
-      await Promise.all(Array.from(selectedTags).map((tagId) => TagService.deleteTag(tagId, deleteAssociatedVideos)))
-      loadTags()
-      setSelectedTags(new Set())
-      setDeleteDialogOpen(false)
-      setDeleteAssociatedVideos(false)
-      setEditMode(false)
-    } catch (err) {
+    const tagIds = Array.from(selectedTags)
+    const results = await Promise.allSettled(tagIds.map((tagId) => TagService.deleteTag(tagId, deleteAssociatedVideos)))
+    const failedIds = tagIds.filter((_, i) => results[i].status === 'rejected')
+    loadTags()
+    setDeleteDialogOpen(false)
+    setDeleteAssociatedVideos(false)
+    if (failedIds.length) {
+      // The server refuses to delete videos the user cannot delete, so keep the
+      // tags that were refused selected and say why.
+      const err = results.find((r) => r.status === 'rejected').reason
       console.error('Error deleting tags:', err)
+      setSelectedTags(new Set(failedIds))
+      setAlert({ open: true, type: 'error', message: err.response?.data || 'Error deleting tags' })
+      return
     }
+    setSelectedTags(new Set())
+    setEditMode(false)
   }
 
   const handleTagClick = (tagId) => {
@@ -217,6 +226,9 @@ const Tags = ({ authenticated, searchText }) => {
 
   return (
     <>
+      <SnackbarAlert severity={alert.type} open={alert.open} setOpen={(open) => setAlert({ ...alert, open })}>
+        {alert.message}
+      </SnackbarAlert>
       {toolbarTarget &&
         authenticated &&
         ReactDOM.createPortal(

@@ -112,24 +112,33 @@ const Games = ({ authenticated, searchText, isAdmin, can }) => {
   }
 
   const handleDeleteConfirm = async () => {
-    try {
-      const deletePromises = Array.from(selectedGames).map((gameId) =>
-        GameService.deleteGame(gameId, deleteAssociatedVideos),
-      )
-      await Promise.all(deletePromises)
+    const gameIds = Array.from(selectedGames)
+    const results = await Promise.allSettled(
+      gameIds.map((gameId) => GameService.deleteGame(gameId, deleteAssociatedVideos)),
+    )
+    const failedIds = gameIds.filter((_, i) => results[i].status === 'rejected')
 
-      // Refresh games list
+    // Refresh games list
+    try {
       const res = await GameService.getGames()
       setGames(res.data)
-
-      // Reset state
-      setSelectedGames(new Set())
-      setDeleteDialogOpen(false)
-      setDeleteAssociatedVideos(false)
-      setEditMode(false)
     } catch (err) {
-      console.error('Error deleting games:', err)
+      console.error('Error fetching games:', err)
     }
+
+    setDeleteDialogOpen(false)
+    setDeleteAssociatedVideos(false)
+    if (failedIds.length) {
+      // The server refuses to delete videos the user cannot delete, so keep the
+      // games that were refused selected and say why.
+      const err = results.find((r) => r.status === 'rejected').reason
+      console.error('Error deleting games:', err)
+      setSelectedGames(new Set(failedIds))
+      setAlert({ open: true, type: 'error', message: err.response?.data || 'Error deleting games' })
+      return
+    }
+    setSelectedGames(new Set())
+    setEditMode(false)
   }
 
   const handleDeleteCancel = () => {

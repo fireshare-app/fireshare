@@ -19,6 +19,7 @@ from .helpers import (
     delete_video_files,
     get_steamgriddb_api_key,
     login_required_unless_public_game_tag,
+    refuse_unless_can_delete_all,
     viewer_sees_private,
 )
 
@@ -542,6 +543,11 @@ def delete_game(steamgriddb_id):
     video_links = VideoGameLink.query.filter_by(game_id=game.id).all()
 
     if delete_videos and video_links:
+        refusal = refuse_unless_can_delete_all(
+            [link.video for link in video_links if link.video is not None], 'game'
+        )
+        if refusal:
+            return refusal
         # Delete all associated videos
         paths = current_app.config['PATHS']
         from ..models import VideoInfo, VideoView, VideoTagLink, MediaFolder
