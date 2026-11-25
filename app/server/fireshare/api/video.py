@@ -809,20 +809,21 @@ def get_video_poster():
     custom_poster_path = derived_dir / "custom_poster.webp"
     jpg_poster_path = derived_dir / "poster.jpg"
 
+    # A missing file is a 404, not a 500: the boomerang is only made for tagged
+    # videos, and the poster doesn't exist until processing has finished.
     if request.args.get('animated'):
-        mp4_path = derived_dir / "boomerang-preview.mp4"
-        webm_path = derived_dir / "boomerang-preview.webm"
-        if mp4_path.exists():
-            response = send_file(mp4_path, mimetype='video/mp4')
-        else:
-            response = send_file(webm_path, mimetype='video/webm')
-        return add_cache_headers(response, video_id)
-    elif custom_poster_path.exists():
+        for path, mimetype in ((derived_dir / "boomerang-preview.mp4", 'video/mp4'),
+                               (derived_dir / "boomerang-preview.webm", 'video/webm')):
+            if path.exists():
+                return add_cache_headers(send_file(path, mimetype=mimetype), video_id)
+        return Response(status=404)
+    if custom_poster_path.exists():
         response = send_file(custom_poster_path, mimetype='image/webp')
         return add_poster_cache_headers(response, f'{video_id}-custom')
-    else:
+    if jpg_poster_path.exists():
         response = send_file(jpg_poster_path, mimetype='image/jpg')
         return add_poster_cache_headers(response, f'{video_id}-generated')
+    return Response(status=404)
 
 
 @api.route('/api/video/<video_id>/poster/custom', methods=['POST'])
