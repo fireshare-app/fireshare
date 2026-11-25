@@ -7,7 +7,7 @@ import time
 from functools import wraps
 from pathlib import Path
 from datetime import datetime
-from flask import current_app
+from flask import current_app, Response
 from .. import db, logger
 from ..models import TranscodeJob, Video, MediaFolder, ImageFolderRule, ImageGameLink
 
@@ -235,6 +235,34 @@ def cancel_pending_transcode_jobs(video_id):
         logger.info(f"Clearing {removed} queued transcode job(s) for deleted video {video_id}")
 
 
+def refuse_unless_can_delete_all(videos, owner_label):
+    """A 403 if the current user may not delete every one of these videos, else None.
+
+    Deleting a tag or game together with its videos deletes each video, so it is
+    held to the same per-video rule as DELETE /api/video/delete/<id>:
+    manage_tags and manage_games let a user put anyone's clips under a tag or
+    game, and must not double as a way to delete them. Callers check before
+    removing anything, so a refusal leaves the library as it was.
+    """
+    from flask_login import current_user
+
+    blocked = [v for v in videos if not current_user.can_modify(v, 'delete')]
+    if not blocked:
+        return None
+    logger.warning(
+        f"Refused to delete {owner_label} with its videos for user {current_user.id}: "
+        f"{len(blocked)} of {len(videos)} video(s) are not theirs to delete"
+    )
+    noun = 'video' if len(blocked) == 1 else 'videos'
+    return Response(
+        status=403,
+        response=(
+            f"{len(blocked)} {noun} in this {owner_label} can't be deleted by you. "
+            f"Nothing was deleted. You can delete the {owner_label} and keep its videos."
+        ),
+    )
+
+
 def add_cache_headers(response, cache_key, max_age=604800):
     """Add cache headers for static assets (default: 7 days)."""
     response.headers['Cache-Control'] = f'public, max-age={max_age}, must-revalidate'
@@ -270,28 +298,56 @@ def get_steamgriddb_api_key():
     return os.environ.get('STEAMGRIDDB_API_KEY', '')
 
 
+def public_game_tagging_enabled():
+    """Whether "Allow Public Game Tagging" is on in config.json."""
+    config_path = current_app.config['PATHS']['data'] / 'config.json'
+    if not config_path.exists():
+        return False
+    try:
+        with open(config_path, 'r') as configfile:
+            config = json.load(configfile)
+    except (OSError, ValueError):
+        return False
+    return bool(config.get('app_config', {}).get('allow_public_game_tag', False))
+
+
 def login_required_unless_public_game_tag(func):
     """
     Decorator that requires login unless public game tagging is enabled in config.
+
+    It only decides who may reach the route. What the caller may then change is
+    up to video_game_link_access.
     """
     from flask_login import current_user
 
     @wraps(func)
     def decorated_view(*args, **kwargs):
-        paths = current_app.config['PATHS']
-        config_path = paths['data'] / 'config.json'
-        allow_public = False
-        if config_path.exists():
-            try:
-                with open(config_path, 'r') as configfile:
-                    config = json.load(configfile)
-                    allow_public = config.get('app_config', {}).get('allow_public_game_tag', False)
-            except:
-                pass
-        if not current_user.is_authenticated and not allow_public:
+        if not current_user.is_authenticated and not public_game_tagging_enabled():
             return current_app.login_manager.unauthorized()
         return func(*args, **kwargs)
     return decorated_view
+
+
+def video_game_link_access(video):
+    """How far the current visitor may change which game a video is linked to.
+
+    'full'   - link, relink or unlink: manage_games, or edit rights on the video.
+    'public' - only give a game to a video that has none yet. This is all that
+               "Allow Public Game Tagging" grants to everyone else, signed in or
+               not, so a visitor can fill in a missing game but cannot overwrite
+               or remove the one its owner chose.
+    None     - nothing.
+    """
+    from flask_login import current_user
+    from .. import permissions as P
+
+    if current_user.is_authenticated and (
+        current_user.can(P.MANAGE_GAMES) or current_user.can_modify(video, 'edit')
+    ):
+        return 'full'
+    if public_game_tagging_enabled():
+        return 'public'
+    return None
 
 
 def get_video_path(id, subid=None, quality=None):

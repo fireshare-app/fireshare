@@ -12,7 +12,12 @@ from ..models import Video, VideoInfo, VideoView, VideoGameLink, VideoTagLink, C
 from .. import permissions as P
 from . import api
 from .decorators import require_perm
-from .helpers import cancel_pending_transcode_jobs, delete_video_files, viewer_sees_private
+from .helpers import (
+    cancel_pending_transcode_jobs,
+    delete_video_files,
+    refuse_unless_can_delete_all,
+    viewer_sees_private,
+)
 
 
 def _regenerate_boomerang_bg(video_id, extension, processed_directory):
@@ -135,6 +140,11 @@ def delete_tag(tag_id):
 
     orphaned_folder_ids = set()
     if delete_videos:
+        refusal = refuse_unless_can_delete_all(
+            [link.video for link in video_links if link.video is not None], 'tag'
+        )
+        if refusal:
+            return refusal
         paths = current_app.config['PATHS']
         for link in video_links:
             video = link.video
